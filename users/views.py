@@ -77,7 +77,7 @@ def login_view(request):
             {
                 "error": "Validation failed",
                 "details": {
-                    "email": ["This field is required"] if not email else [],
+                    "email": ["This field is required"] if not identifier else [],
                     "password": ["This field is required"] if not password else [],
                 },
             },
