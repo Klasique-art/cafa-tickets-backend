@@ -97,7 +97,15 @@ def login_view(request):
             },
             status=status.HTTP_401_UNAUTHORIZED,
         )
-
+    
+    if not user.check_password(password):
+        return Response(
+            {
+                "error": "Invalid credentials",
+                "message": "The email/username or password you entered is incorrect.",
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
     if not user.is_active:
         return Response(
             {
@@ -108,14 +116,7 @@ def login_view(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    if not user.check_password(password):
-        return Response(
-            {
-                "error": "Invalid credentials",
-                "message": "The email/username or password you entered is incorrect.",
-            },
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+
 
     # Generate tokens
     refresh = RefreshToken.for_user(user)
