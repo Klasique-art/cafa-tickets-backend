@@ -125,7 +125,8 @@ REST_FRAMEWORK = {
     ),
 }
 
-
+DOMAIN = "localhost:3000"
+SITE_NAME = "Cafa Tickets"
 DJOSER = {
     "USER_CREATE_PASSWORD_RETYPE": False,
     "SEND_ACTIVATION_EMAIL": True,
