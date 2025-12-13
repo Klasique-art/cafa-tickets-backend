@@ -6,7 +6,7 @@ from .models import User
 from .serializers import UserSettingsSerializer, UserSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
-
+from django.db.models import Q
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
@@ -69,10 +69,10 @@ User = get_user_model()
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login_view(request):
-    email = request.data.get("email")
+    identifier = request.data.get("email")
     password = request.data.get("password")
 
-    if not email or not password:
+    if not identifier or not password:
         return Response(
             {
                 "error": "Validation failed",
@@ -85,7 +85,10 @@ def login_view(request):
         )
 
     try:
-        user = User.objects.get(email=email)
+        # it can be either email or username
+        user = User.objects.filter(email=identifier).first() or User.objects.filter(username=identifier).first()
+        if not user:
+            raise User.DoesNotExist
     except User.DoesNotExist:
         return Response(
             {
