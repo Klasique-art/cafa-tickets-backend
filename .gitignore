@@ -1,8 +1,42 @@
+# Python
 .venv/
-db.sqlite3
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+*.log
+local_settings.py
 media/
 staticfiles/
-.DS_Store
+static/
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.claude/
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Migrations (uncomment if needed)
+# */migrations/*.py
+# !*/migrations/__init__.py
