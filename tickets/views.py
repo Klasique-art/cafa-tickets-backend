@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Q, Count, Avg
+from django.db.models import Q, Count, Avg, Sum
 from decimal import Decimal
 
 from .models import (
@@ -14,9 +14,10 @@ from .models import (
     EventCategory,
     Event,
     TicketType,
-    Order,
-    Ticket,
+    Purchase,
     Payment,
+    Ticket,
+    Order,
     EventReview,
 )
 from .serializers import (
@@ -26,12 +27,13 @@ from .serializers import (
     EventDetailSerializer,
     EventCreateUpdateSerializer,
     TicketTypeSerializer,
-    OrderSerializer,
-    CreateOrderSerializer,
+    PurchaseSerializer,
+    CreatePurchaseSerializer,
     TicketSerializer,
     PaymentSerializer,
     EventReviewSerializer,
     CheckInSerializer,
+    OrderSerializer,
 )
 from .permissions import IsOrganizerOrReadOnly, IsOrderOwner
 
@@ -60,37 +62,25 @@ class EventCategoryViewSet(viewsets.ModelViewSet):
 class EventViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["title", "description", "tags"]
+    search_fields = ["title", "description"]
     ordering_fields = ["start_date", "created_at", "views_count"]
     ordering = ["-start_date"]
     lookup_field = "slug"
 
     def get_queryset(self):
         queryset = Event.objects.select_related(
-            "category", "venue", "organizer"
+            "category", "organizer"
         ).prefetch_related("ticket_types")
 
         if not self.request.user.is_authenticated or not self.request.user.is_staff:
-            queryset = queryset.filter(status="published", privacy="public")
+            queryset = queryset.filter(is_published=True)
 
         category_slug = self.request.query_params.get("category", None)
         if category_slug:
             queryset = queryset.filter(category__slug=category_slug)
 
-        status_filter = self.request.query_params.get("status", None)
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-
-        is_featured = self.request.query_params.get("featured", None)
-        if is_featured == "true":
-            queryset = queryset.filter(is_featured=True)
-
-        is_free = self.request.query_params.get("free", None)
-        if is_free == "true":
-            queryset = queryset.filter(is_free=True)
-
         time_filter = self.request.query_params.get("time", None)
-        now = timezone.now()
+        now = timezone.now().date()
         if time_filter == "upcoming":
             queryset = queryset.filter(start_date__gt=now)
         elif time_filter == "ongoing":
@@ -100,7 +90,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         city = self.request.query_params.get("city", None)
         if city:
-            queryset = queryset.filter(venue__city__icontains=city)
+            queryset = queryset.filter(venue_city__icontains=city)
 
         return queryset
 
@@ -124,7 +114,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def ticket_types(self, request, slug=None):
         event = self.get_object()
-        ticket_types = event.ticket_types.filter(is_active=True)
+        ticket_types = event.ticket_types.all()
         serializer = TicketTypeSerializer(ticket_types, many=True)
         return Response(serializer.data)
 
@@ -165,7 +155,8 @@ class EventViewSet(viewsets.ModelViewSet):
             has_attended = Ticket.objects.filter(
                 event=event,
                 purchase__user=request.user,
-                purchase__status="completed",
+                status="paid",
+                is_checked_in=True,
             ).exists()
 
             serializer.save(
@@ -191,8 +182,8 @@ class EventViewSet(viewsets.ModelViewSet):
             "total_revenue": float(event.revenue_generated),
             "tickets_available": event.tickets_available,
             "is_sold_out": event.is_sold_out,
-            "total_orders": event.orders.filter(status="completed").count(),
-            "pending_orders": event.orders.filter(status="pending").count(),
+            "total_purchases": Purchase.objects.filter(event=event, status="completed").count(),
+            "pending_purchases": Purchase.objects.filter(event=event, status="pending").count(),
             "views_count": event.views_count,
             "average_rating": event.reviews.aggregate(Avg("rating"))["rating__avg"],
             "total_reviews": event.reviews.count(),
@@ -204,9 +195,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 {
                     "name": ticket_type.name,
                     "quantity": ticket_type.quantity,
-                    "quantity_sold": ticket_type.quantity_sold,
+                    "tickets_sold": ticket_type.tickets_sold,
                     "quantity_remaining": ticket_type.quantity_remaining,
-                    "revenue": float(ticket_type.price * ticket_type.quantity_sold),
+                    "revenue": float(ticket_type.price * ticket_type.tickets_sold),
                 }
             )
 
@@ -227,92 +218,83 @@ class TicketTypeViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class CreateOrderView(APIView):
+class CreatePurchaseView(APIView):
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def post(self, request):
-        serializer = CreateOrderSerializer(data=request.data)
+        serializer = CreatePurchaseSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
         event = Event.objects.get(id=data["event_id"])
+        ticket_type = TicketType.objects.get(id=data["ticket_type_id"])
+        quantity = data["quantity"]
 
-        total_amount = Decimal("0.00")
-        items_to_create = []
+        ticket_price = ticket_type.price
+        subtotal = ticket_price * quantity
+        service_fee = subtotal * Decimal("0.05")
+        total = subtotal + service_fee
 
-        for item in data["items"]:
-            ticket_type = TicketType.objects.get(id=item["ticket_type_id"])
-            quantity = item["quantity"]
-            total_amount += ticket_type.price * quantity
-
-            items_to_create.append(
-                {
-                    "ticket_type": ticket_type,
-                    "quantity": quantity,
-                    "attendees": item.get("attendees", []),
-                }
-            )
-
-        service_fee = total_amount * Decimal("0.025")
-
-        order = Order.objects.create(
+        purchase = Purchase.objects.create(
             user=request.user,
             event=event,
-            total_amount=total_amount,
-            service_fee=service_fee,
+            ticket_type=ticket_type,
+            quantity=quantity,
             buyer_name=data["buyer_name"],
             buyer_email=data["buyer_email"],
-            buyer_phone=data.get("buyer_phone", ""),
-            notes=data.get("notes", ""),
-            status="pending",
+            buyer_phone=data["buyer_phone"],
+            ticket_price=ticket_price,
+            subtotal=subtotal,
+            service_fee=service_fee,
+            total=total,
+            status="reserved",
         )
 
-        tickets = []
-        for item_data in items_to_create:
-            ticket_type = item_data["ticket_type"]
-            quantity = item_data["quantity"]
-            attendees = item_data["attendees"]
-
-            for i in range(quantity):
-                attendee_info = attendees[i] if i < len(attendees) else {}
-
-                ticket = Ticket.objects.create(
-                    order=order,
-                    event=event,
-                    ticket_type=ticket_type,
-                    attendee_name=attendee_info.get("name", data["buyer_name"]),
-                    attendee_email=attendee_info.get("email", data["buyer_email"]),
-                    attendee_phone=attendee_info.get("phone", data.get("buyer_phone", "")),
-                    price_paid=ticket_type.price,
-                    status="valid",
-                )
-                tickets.append(ticket)
-
-            ticket_type.quantity_sold += quantity
-            ticket_type.save(update_fields=["quantity_sold"])
-
-        payment = Payment.objects.create(
-            order=order,
-            amount=order.grand_total,
-            gateway=data["payment_gateway"],
-            status="pending",
-            ip_address=request.META.get("REMOTE_ADDR"),
-        )
-
-        order_serializer = OrderSerializer(order)
+        purchase_serializer = PurchaseSerializer(purchase)
         return Response(
             {
-                "message": "Order created successfully",
-                "order": order_serializer.data,
-                "payment": {
-                    "payment_id": payment.payment_id,
-                    "amount": float(payment.amount),
-                    "gateway": payment.gateway,
-                },
+                "message": "Purchase created successfully",
+                "purchase": purchase_serializer.data,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class PurchaseViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = PurchaseSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Purchase.objects.all()
+        return Purchase.objects.filter(user=user)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        purchase = self.get_object()
+
+        if purchase.user != request.user and not request.user.is_staff:
+            return Response(
+                {"error": "You don't have permission to cancel this purchase."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if purchase.status not in ["reserved", "pending"]:
+            return Response(
+                {"error": "Only reserved or pending purchases can be cancelled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            purchase.status = "failed"
+            purchase.save(update_fields=["status"])
+
+        return Response(
+            {"message": "Purchase cancelled successfully"},
+            status=status.HTTP_200_OK,
         )
 
 
@@ -326,39 +308,6 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             return Order.objects.all()
         return Order.objects.filter(user=user)
 
-    @action(detail=True, methods=["post"])
-    def cancel(self, request, pk=None):
-        order = self.get_object()
-
-        if order.user != request.user and not request.user.is_staff:
-            return Response(
-                {"error": "You don't have permission to cancel this order."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        if order.status != "pending":
-            return Response(
-                {"error": "Only pending orders can be cancelled."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        with transaction.atomic():
-            for ticket in order.tickets.all():
-                ticket.status = "cancelled"
-                ticket.save()
-
-                if ticket.ticket_type:
-                    ticket.ticket_type.quantity_sold -= 1
-                    ticket.ticket_type.save(update_fields=["quantity_sold"])
-
-            order.status = "cancelled"
-            order.save(update_fields=["status"])
-
-        return Response(
-            {"message": "Order cancelled successfully"},
-            status=status.HTTP_200_OK,
-        )
-
 
 class TicketViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TicketSerializer
@@ -368,7 +317,7 @@ class TicketViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         if user.is_staff:
             return Ticket.objects.all()
-        return Ticket.objects.filter(purchase__user=user)
+        return Ticket.objects.filter(purchase__user=user, status="paid")
 
     @action(detail=True, methods=["get"])
     def download(self, request, pk=None):
@@ -389,8 +338,8 @@ class CheckInView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        ticket_number = serializer.validated_data["ticket_number"]
-        ticket = get_object_or_404(Ticket, ticket_number=ticket_number)
+        ticket_id = serializer.validated_data["ticket_id"]
+        ticket = get_object_or_404(Ticket, ticket_id=ticket_id)
 
         if not ticket.can_check_in:
             return Response(
@@ -401,6 +350,7 @@ class CheckInView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        ticket.is_checked_in = True
         ticket.checked_in_at = timezone.now()
         ticket.checked_in_by = request.user
         ticket.status = "used"
@@ -415,14 +365,20 @@ class CheckInView(APIView):
         )
 
     def _get_check_in_error_reason(self, ticket):
-        if ticket.status != "valid":
-            return f"Ticket status is '{ticket.status}'"
-        if ticket.checked_in_at:
+        if ticket.status != "paid":
+            return f"Ticket status is '{ticket.status}', must be 'paid'"
+        if ticket.is_checked_in:
             return f"Ticket already checked in at {ticket.checked_in_at}"
         now = timezone.now()
-        if now < ticket.event.start_date:
+        event_start = timezone.datetime.combine(ticket.event.start_date, ticket.event.start_time or timezone.datetime.min.time())
+        event_end = timezone.datetime.combine(ticket.event.end_date, ticket.event.end_time or timezone.datetime.max.time())
+        if timezone.is_naive(event_start):
+            event_start = timezone.make_aware(event_start)
+        if timezone.is_naive(event_end):
+            event_end = timezone.make_aware(event_end)
+        if now < event_start:
             return "Event has not started yet"
-        if now > ticket.event.end_date:
+        if now > event_end:
             return "Event has already ended"
         return "Unknown reason"
 
@@ -431,17 +387,13 @@ class PaymentWebhookView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        gateway = request.data.get("gateway")
+        provider = request.data.get("provider", "paystack")
 
-        if gateway == "paystack":
+        if provider == "paystack":
             return self._handle_paystack_webhook(request.data)
-        elif gateway == "stripe":
-            return self._handle_stripe_webhook(request.data)
-        elif gateway == "flutterwave":
-            return self._handle_flutterwave_webhook(request.data)
 
         return Response(
-            {"error": "Unknown payment gateway"},
+            {"error": "Unknown payment provider"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -451,14 +403,14 @@ class PaymentWebhookView(APIView):
         payment_status = data.get("status")
 
         try:
-            payment = Payment.objects.get(gateway_reference=reference)
+            payment = Payment.objects.get(reference=reference)
         except Payment.DoesNotExist:
             return Response(
                 {"error": "Payment not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        payment.gateway_response = data
+        payment.provider_response = data
         payment.save()
 
         if payment_status == "success":
@@ -466,22 +418,30 @@ class PaymentWebhookView(APIView):
             payment.completed_at = timezone.now()
             payment.save()
 
-            order = payment.order
-            order.status = "completed"
-            order.completed_at = timezone.now()
-            order.save()
+            purchase = payment.purchase
+            purchase.status = "completed"
+            purchase.completed_at = timezone.now()
+            purchase.save()
+
+            for ticket in purchase.tickets.all():
+                ticket.status = "paid"
+                ticket.save()
+
+            ticket_type = purchase.ticket_type
+            ticket_type.tickets_sold += purchase.quantity
+            ticket_type.save()
 
         elif payment_status == "failed":
             payment.status = "failed"
+            payment.failed_at = timezone.now()
+            payment.failure_reason = data.get("failure_reason", "Payment failed")
             payment.save()
 
+            purchase = payment.purchase
+            purchase.status = "failed"
+            purchase.save()
+
         return Response({"message": "Webhook processed"}, status=status.HTTP_200_OK)
-
-    def _handle_stripe_webhook(self, data):
-        return Response({"message": "Stripe webhook handler to be implemented"})
-
-    def _handle_flutterwave_webhook(self, data):
-        return Response({"message": "Flutterwave webhook handler to be implemented"})
 
 
 class MyEventsView(generics.ListAPIView):
@@ -490,6 +450,14 @@ class MyEventsView(generics.ListAPIView):
 
     def get_queryset(self):
         return Event.objects.filter(organizer=self.request.user)
+
+
+class MyPurchasesView(generics.ListAPIView):
+    serializer_class = PurchaseSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Purchase.objects.filter(user=self.request.user).order_by("-created_at")
 
 
 class MyOrdersView(generics.ListAPIView):
@@ -505,7 +473,7 @@ class MyTicketsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Ticket.objects.filter(purchase__user=self.request.user).order_by("-created_at")
+        return Ticket.objects.filter(purchase__user=self.request.user, status="paid").order_by("-created_at")
 
 
 class EventSearchView(APIView):
@@ -523,10 +491,9 @@ class EventSearchView(APIView):
         events = Event.objects.filter(
             Q(title__icontains=query)
             | Q(description__icontains=query)
-            | Q(tags__icontains=query)
-            | Q(venue__city__icontains=query),
-            status="published",
-            privacy="public",
+            | Q(venue_name__icontains=query)
+            | Q(venue_city__icontains=query),
+            is_published=True,
         ).distinct()[:20]
 
         serializer = EventListSerializer(events, many=True)
@@ -538,22 +505,12 @@ class EventSearchView(APIView):
         )
 
 
-class FeaturedEventsView(generics.ListAPIView):
-    serializer_class = EventListSerializer
-    permission_classes = [AllowAny]
-
-    def get_queryset(self):
-        return Event.objects.filter(
-            is_featured=True, status="published", privacy="public"
-        ).order_by("-start_date")[:10]
-
-
 class UpcomingEventsView(generics.ListAPIView):
     serializer_class = EventListSerializer
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        now = timezone.now()
+        now = timezone.now().date()
         return Event.objects.filter(
-            start_date__gt=now, status="published", privacy="public"
+            start_date__gt=now, is_published=True
         ).order_by("start_date")[:20]

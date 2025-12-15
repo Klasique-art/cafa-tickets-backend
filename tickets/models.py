@@ -866,7 +866,9 @@ class Order(models.Model):
 
     @property
     def grand_total(self):
-        return self.total_amount + self.service_fee
+        total = self.total_amount or Decimal("0.00")
+        fee = self.service_fee or Decimal("0.00")
+        return total + fee
 
 
 class EventReview(models.Model):

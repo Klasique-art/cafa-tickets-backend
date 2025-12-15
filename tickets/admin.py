@@ -42,7 +42,6 @@ class EventCategoryAdmin(admin.ModelAdmin):
     list_filter = ["is_active", "created_at"]
     search_fields = ["name", "description"]
     readonly_fields = ["slug", "created_at", "updated_at"]
-    prepopulated_fields = {"slug": ("name",)}
 
     def event_count(self, obj):
         return obj.events.count()
@@ -82,7 +81,6 @@ class EventAdmin(admin.ModelAdmin):
         "updated_at",
         "tickets_sold_count",
     ]
-    prepopulated_fields = {"slug": ("title",)}
     inlines = [TicketTypeInline]
     date_hierarchy = "start_date"
 
@@ -185,13 +183,42 @@ class PurchaseAdmin(admin.ModelAdmin):
             "fields": ("ticket_price", "subtotal", "service_fee", "total")
         }),
         ("Timing", {
-            "fields": ("reserved_at", "reservation_expires_at", "completed_at")
+            "fields": ("reservation_expires_at", "completed_at")
         }),
         ("Timestamps", {
             "fields": ("created_at", "updated_at"),
             "classes": ("collapse",)
         }),
     )
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(super().get_readonly_fields(request, obj))
+        if obj:
+            readonly.append("reserved_at")
+        return readonly
+
+    def get_fieldsets(self, request, obj=None):
+        fieldsets = super().get_fieldsets(request, obj)
+        if obj:
+            fieldsets = (
+                ("Purchase Information", {
+                    "fields": ("purchase_id", "user", "event", "ticket_type", "quantity", "status")
+                }),
+                ("Buyer Details", {
+                    "fields": ("buyer_name", "buyer_email", "buyer_phone")
+                }),
+                ("Financial", {
+                    "fields": ("ticket_price", "subtotal", "service_fee", "total")
+                }),
+                ("Timing", {
+                    "fields": ("reserved_at", "reservation_expires_at", "completed_at")
+                }),
+                ("Timestamps", {
+                    "fields": ("created_at", "updated_at"),
+                    "classes": ("collapse",)
+                }),
+            )
+        return fieldsets
 
     def status_badge(self, obj):
         colors = {
@@ -353,7 +380,6 @@ class TicketAdmin(admin.ModelAdmin):
     qr_code_display.short_description = "QR Code Preview"
 
 
-# Legacy Order model admin
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     list_display = [
@@ -416,7 +442,10 @@ class OrderAdmin(admin.ModelAdmin):
     status_badge.short_description = "Status"
 
     def grand_total_display(self, obj):
-        return f"GHS {obj.grand_total}"
+        try:
+            return f"GHS {obj.grand_total:.2f}"
+        except (TypeError, AttributeError):
+            return "GHS 0.00"
     grand_total_display.short_description = "Grand Total"
 
     def total_tickets_count(self, obj):

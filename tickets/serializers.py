@@ -6,9 +6,10 @@ from .models import (
     EventCategory,
     Event,
     TicketType,
-    Order,
-    Ticket,
+    Purchase,
     Payment,
+    Ticket,
+    Order,
     EventReview,
 )
 
@@ -54,7 +55,7 @@ class EventCategorySerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "slug", "created_at", "updated_at"]
 
     def get_event_count(self, obj):
-        return obj.events.filter(status="published").count()
+        return obj.get_event_count()
 
 
 class OrganizerSerializer(serializers.ModelSerializer):
@@ -97,13 +98,14 @@ class TicketTypeSerializer(serializers.ModelSerializer):
 
 class EventListSerializer(serializers.ModelSerializer):
     category = EventCategorySerializer(read_only=True)
-    venue = VenueSerializer(read_only=True)
     organizer = OrganizerSerializer(read_only=True)
     is_upcoming = serializers.ReadOnlyField()
     is_ongoing = serializers.ReadOnlyField()
     is_past = serializers.ReadOnlyField()
     tickets_sold = serializers.ReadOnlyField()
     is_sold_out = serializers.ReadOnlyField()
+    status = serializers.ReadOnlyField()
+    lowest_price = serializers.ReadOnlyField()
 
     class Meta:
         model = Event
@@ -113,23 +115,24 @@ class EventListSerializer(serializers.ModelSerializer):
             "slug",
             "short_description",
             "category",
-            "venue",
             "organizer",
-            "banner_image",
-            "thumbnail_image",
+            "featured_image",
+            "venue_name",
+            "venue_city",
+            "venue_country",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
             "status",
-            "privacy",
-            "is_featured",
-            "is_free",
+            "is_published",
             "is_upcoming",
             "is_ongoing",
             "is_past",
             "tickets_sold",
             "is_sold_out",
+            "lowest_price",
             "max_attendees",
-            "tags",
             "views_count",
             "created_at",
         ]
@@ -137,7 +140,6 @@ class EventListSerializer(serializers.ModelSerializer):
 
 class EventDetailSerializer(serializers.ModelSerializer):
     category = EventCategorySerializer(read_only=True)
-    venue = VenueSerializer(read_only=True)
     organizer = OrganizerSerializer(read_only=True)
     ticket_types = TicketTypeSerializer(many=True, read_only=True)
     is_upcoming = serializers.ReadOnlyField()
@@ -147,6 +149,9 @@ class EventDetailSerializer(serializers.ModelSerializer):
     tickets_available = serializers.ReadOnlyField()
     is_sold_out = serializers.ReadOnlyField()
     revenue_generated = serializers.ReadOnlyField()
+    status = serializers.ReadOnlyField()
+    lowest_price = serializers.ReadOnlyField()
+    highest_price = serializers.ReadOnlyField()
 
     class Meta:
         model = Event
@@ -157,20 +162,26 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "description",
             "short_description",
             "category",
-            "venue",
             "organizer",
-            "banner_image",
-            "thumbnail_image",
+            "payment_profile",
+            "featured_image",
+            "additional_images",
+            "venue_name",
+            "venue_address",
+            "venue_city",
+            "venue_country",
+            "venue_latitude",
+            "venue_longitude",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
+            "is_recurring",
+            "recurrence_pattern",
+            "check_in_policy",
             "status",
-            "privacy",
-            "is_featured",
-            "is_free",
+            "is_published",
             "max_attendees",
-            "tags",
-            "external_url",
-            "terms_and_conditions",
             "views_count",
             "is_upcoming",
             "is_ongoing",
@@ -178,6 +189,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "tickets_sold",
             "tickets_available",
             "is_sold_out",
+            "lowest_price",
+            "highest_price",
             "revenue_generated",
             "ticket_types",
             "created_at",
@@ -187,7 +200,6 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
 class EventCreateUpdateSerializer(serializers.ModelSerializer):
     category_id = serializers.IntegerField(required=False, allow_null=True)
-    venue_id = serializers.IntegerField(required=False, allow_null=True)
 
     class Meta:
         model = Event
@@ -197,33 +209,41 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             "description",
             "short_description",
             "category_id",
-            "venue_id",
-            "banner_image",
-            "thumbnail_image",
+            "payment_profile",
+            "featured_image",
+            "additional_images",
+            "venue_name",
+            "venue_address",
+            "venue_city",
+            "venue_country",
+            "venue_latitude",
+            "venue_longitude",
             "start_date",
             "end_date",
-            "status",
-            "privacy",
-            "is_featured",
-            "is_free",
+            "start_time",
+            "end_time",
+            "is_recurring",
+            "recurrence_pattern",
+            "check_in_policy",
+            "is_published",
             "max_attendees",
-            "tags",
-            "external_url",
-            "terms_and_conditions",
         ]
         read_only_fields = ["id"]
 
     def validate(self, data):
-        if "start_date" in data and "end_date" in data:
-            if data["start_date"] >= data["end_date"]:
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
+
+        if start_date and end_date:
+            if start_date > end_date:
                 raise serializers.ValidationError(
                     {"end_date": "End date must be after start date."}
                 )
+
         return data
 
     def create(self, validated_data):
         category_id = validated_data.pop("category_id", None)
-        venue_id = validated_data.pop("venue_id", None)
 
         event = Event.objects.create(**validated_data)
 
@@ -231,22 +251,14 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             try:
                 category = EventCategory.objects.get(id=category_id)
                 event.category = category
+                event.save()
             except EventCategory.DoesNotExist:
                 pass
 
-        if venue_id:
-            try:
-                venue = Venue.objects.get(id=venue_id)
-                event.venue = venue
-            except Venue.DoesNotExist:
-                pass
-
-        event.save()
         return event
 
     def update(self, instance, validated_data):
         category_id = validated_data.pop("category_id", None)
-        venue_id = validated_data.pop("venue_id", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -258,15 +270,105 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             except EventCategory.DoesNotExist:
                 instance.category = None
 
-        if venue_id is not None:
-            try:
-                venue = Venue.objects.get(id=venue_id)
-                instance.venue = venue
-            except Venue.DoesNotExist:
-                instance.venue = None
-
         instance.save()
         return instance
+
+
+class PurchaseSerializer(serializers.ModelSerializer):
+    event = EventListSerializer(read_only=True)
+    ticket_type = TicketTypeSerializer(read_only=True)
+    is_expired = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Purchase
+        fields = [
+            "id",
+            "purchase_id",
+            "event",
+            "ticket_type",
+            "quantity",
+            "buyer_name",
+            "buyer_email",
+            "buyer_phone",
+            "ticket_price",
+            "subtotal",
+            "service_fee",
+            "total",
+            "status",
+            "is_expired",
+            "reserved_at",
+            "reservation_expires_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "purchase_id",
+            "reserved_at",
+            "reservation_expires_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class CreatePurchaseSerializer(serializers.Serializer):
+    event_id = serializers.IntegerField()
+    ticket_type_id = serializers.IntegerField()
+    quantity = serializers.IntegerField(min_value=1)
+    buyer_name = serializers.CharField(max_length=255)
+    buyer_email = serializers.EmailField()
+    buyer_phone = serializers.CharField(max_length=20)
+
+    def validate(self, data):
+        try:
+            event = Event.objects.get(id=data["event_id"])
+        except Event.DoesNotExist:
+            raise serializers.ValidationError({"event_id": "Event not found."})
+
+        if not event.is_published:
+            raise serializers.ValidationError(
+                {"event_id": "Event is not available for ticket purchase."}
+            )
+
+        try:
+            ticket_type = TicketType.objects.get(
+                id=data["ticket_type_id"], event=event
+            )
+        except TicketType.DoesNotExist:
+            raise serializers.ValidationError(
+                {"ticket_type_id": "Ticket type not found."}
+            )
+
+        if not ticket_type.is_on_sale:
+            raise serializers.ValidationError(
+                {"ticket_type_id": f"Ticket type '{ticket_type.name}' is not on sale."}
+            )
+
+        quantity = data["quantity"]
+        if quantity < ticket_type.min_purchase:
+            raise serializers.ValidationError(
+                {
+                    "quantity": f"Minimum purchase for '{ticket_type.name}' is {ticket_type.min_purchase}."
+                }
+            )
+
+        if quantity > ticket_type.max_purchase:
+            raise serializers.ValidationError(
+                {
+                    "quantity": f"Maximum purchase for '{ticket_type.name}' is {ticket_type.max_purchase}."
+                }
+            )
+
+        if quantity > ticket_type.quantity_remaining:
+            raise serializers.ValidationError(
+                {
+                    "quantity": f"Only {ticket_type.quantity_remaining} tickets remaining for '{ticket_type.name}'."
+                }
+            )
+
+        return data
 
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -274,21 +376,22 @@ class TicketSerializer(serializers.ModelSerializer):
     ticket_type = TicketTypeSerializer(read_only=True)
     is_valid = serializers.ReadOnlyField()
     can_check_in = serializers.ReadOnlyField()
-    price_paid = serializers.SerializerMethodField()
+    ticket_number = serializers.ReadOnlyField(source='ticket_id')
 
     class Meta:
         model = Ticket
         fields = [
             "id",
+            "ticket_id",
             "ticket_number",
             "event",
             "ticket_type",
             "attendee_name",
             "attendee_email",
             "attendee_phone",
-            "price_paid",
             "status",
             "qr_code",
+            "is_checked_in",
             "checked_in_at",
             "is_valid",
             "can_check_in",
@@ -297,29 +400,46 @@ class TicketSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "ticket_id",
             "ticket_number",
             "qr_code",
+            "is_checked_in",
             "checked_in_at",
             "created_at",
             "updated_at",
         ]
 
-    def get_price_paid(self, obj):
-        """Get ticket price from purchase"""
-        if obj.purchase:
-            return obj.purchase.ticket_price
-        return None
 
+class PaymentSerializer(serializers.ModelSerializer):
+    purchase = PurchaseSerializer(read_only=True)
 
-class OrderItemSerializer(serializers.Serializer):
-    ticket_type_id = serializers.IntegerField()
-    quantity = serializers.IntegerField(min_value=1)
-    attendees = serializers.ListField(
-        child=serializers.DictField(
-            child=serializers.CharField(max_length=255)
-        ),
-        required=False,
-    )
+    class Meta:
+        model = Payment
+        fields = [
+            "id",
+            "payment_id",
+            "purchase",
+            "amount",
+            "currency",
+            "payment_method",
+            "provider",
+            "reference",
+            "payment_url",
+            "status",
+            "provider_response",
+            "failure_reason",
+            "created_at",
+            "completed_at",
+            "failed_at",
+        ]
+        read_only_fields = [
+            "id",
+            "payment_id",
+            "provider_response",
+            "created_at",
+            "completed_at",
+            "failed_at",
+        ]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -359,97 +479,6 @@ class OrderSerializer(serializers.ModelSerializer):
         ]
 
 
-class CreateOrderSerializer(serializers.Serializer):
-    event_id = serializers.IntegerField()
-    items = OrderItemSerializer(many=True)
-    buyer_name = serializers.CharField(max_length=255)
-    buyer_email = serializers.EmailField()
-    buyer_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
-    payment_gateway = serializers.ChoiceField(
-        choices=Payment.PROVIDER_CHOICES
-    )
-
-    def validate(self, data):
-        try:
-            event = Event.objects.get(id=data["event_id"])
-        except Event.DoesNotExist:
-            raise serializers.ValidationError({"event_id": "Event not found."})
-
-        if event.status != "published":
-            raise serializers.ValidationError(
-                {"event_id": "Event is not available for ticket purchase."}
-            )
-
-        for item in data["items"]:
-            try:
-                ticket_type = TicketType.objects.get(
-                    id=item["ticket_type_id"], event=event
-                )
-            except TicketType.DoesNotExist:
-                raise serializers.ValidationError(
-                    {"items": f"Ticket type {item['ticket_type_id']} not found."}
-                )
-
-            if not ticket_type.is_on_sale:
-                raise serializers.ValidationError(
-                    {"items": f"Ticket type '{ticket_type.name}' is not on sale."}
-                )
-
-            quantity = item["quantity"]
-            if quantity < ticket_type.min_purchase:
-                raise serializers.ValidationError(
-                    {
-                        "items": f"Minimum purchase for '{ticket_type.name}' is {ticket_type.min_purchase}."
-                    }
-                )
-
-            if quantity > ticket_type.max_purchase:
-                raise serializers.ValidationError(
-                    {
-                        "items": f"Maximum purchase for '{ticket_type.name}' is {ticket_type.max_purchase}."
-                    }
-                )
-
-            if quantity > ticket_type.quantity_remaining:
-                raise serializers.ValidationError(
-                    {
-                        "items": f"Only {ticket_type.quantity_remaining} tickets remaining for '{ticket_type.name}'."
-                    }
-                )
-
-        return data
-
-
-class PaymentSerializer(serializers.ModelSerializer):
-    order = OrderSerializer(read_only=True)
-
-    class Meta:
-        model = Payment
-        fields = [
-            "id",
-            "payment_id",
-            "order",
-            "amount",
-            "gateway",
-            "status",
-            "gateway_reference",
-            "gateway_response",
-            "metadata",
-            "created_at",
-            "updated_at",
-            "completed_at",
-        ]
-        read_only_fields = [
-            "id",
-            "payment_id",
-            "gateway_response",
-            "created_at",
-            "updated_at",
-            "completed_at",
-        ]
-
-
 class EventReviewSerializer(serializers.ModelSerializer):
     user = OrganizerSerializer(read_only=True)
 
@@ -479,11 +508,11 @@ class EventReviewSerializer(serializers.ModelSerializer):
 
 
 class CheckInSerializer(serializers.Serializer):
-    ticket_number = serializers.CharField(max_length=100)
+    ticket_id = serializers.CharField(max_length=100)
 
-    def validate_ticket_number(self, value):
+    def validate_ticket_id(self, value):
         try:
-            ticket = Ticket.objects.get(ticket_number=value)
+            ticket = Ticket.objects.get(ticket_id=value)
         except Ticket.DoesNotExist:
-            raise serializers.ValidationError("Invalid ticket number.")
+            raise serializers.ValidationError("Invalid ticket ID.")
         return value
