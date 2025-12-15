@@ -91,7 +91,7 @@ class OrganizerDetailSerializer(serializers.ModelSerializer):
 
 class TicketTypeSerializer(serializers.ModelSerializer):
     """Serializer for ticket types"""
-    tickets_remaining = serializers.ReadOnlyField(source='tickets_remaining')
+    tickets_remaining = serializers.ReadOnlyField()
     is_available = serializers.ReadOnlyField()
 
     class Meta:
@@ -237,6 +237,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'max_attendees',
             'tickets_sold',
             'tickets_available',
+            'lowest_price',
+            'highest_price',
             'status',
             'is_recurring',
             'recurrence_info',
