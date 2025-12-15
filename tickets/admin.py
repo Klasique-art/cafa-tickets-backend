@@ -5,9 +5,10 @@ from .models import (
     EventCategory,
     Event,
     TicketType,
-    Order,
-    Ticket,
+    Purchase,
     Payment,
+    Ticket,
+    Order,
     EventReview,
 )
 
@@ -51,8 +52,8 @@ class EventCategoryAdmin(admin.ModelAdmin):
 class TicketTypeInline(admin.TabularInline):
     model = TicketType
     extra = 1
-    fields = ["name", "price", "quantity", "quantity_sold", "is_active"]
-    readonly_fields = ["quantity_sold"]
+    fields = ["name", "price", "quantity", "tickets_sold"]
+    readonly_fields = ["tickets_sold"]
 
 
 @admin.register(Event)
@@ -62,28 +63,24 @@ class EventAdmin(admin.ModelAdmin):
         "category",
         "organizer",
         "start_date",
-        "status",
-        "is_featured",
+        "event_status",
+        "is_published",
         "tickets_sold_count",
         "views_count",
     ]
     list_filter = [
-        "status",
-        "privacy",
-        "is_featured",
-        "is_free",
+        "is_published",
         "category",
         "created_at",
         "start_date",
     ]
-    search_fields = ["title", "description", "tags"]
+    search_fields = ["title", "description"]
     readonly_fields = [
         "slug",
         "views_count",
         "created_at",
         "updated_at",
         "tickets_sold_count",
-        "revenue_display",
     ]
     prepopulated_fields = {"slug": ("title",)}
     inlines = [TicketTypeInline]
@@ -91,26 +88,29 @@ class EventAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ("Basic Information", {
-            "fields": ("title", "slug", "description", "short_description", "tags")
+            "fields": ("title", "slug", "description", "short_description")
         }),
         ("Categorization", {
-            "fields": ("category", "venue", "organizer")
+            "fields": ("category", "organizer", "payment_profile")
+        }),
+        ("Venue", {
+            "fields": ("venue_name", "venue_address", "venue_city", "venue_country", "venue_latitude", "venue_longitude")
         }),
         ("Images", {
-            "fields": ("banner_image", "thumbnail_image")
+            "fields": ("featured_image", "additional_images")
         }),
         ("Schedule", {
-            "fields": ("start_date", "end_date")
+            "fields": ("start_date", "end_date", "start_time", "end_time")
         }),
-        ("Settings", {
-            "fields": ("status", "privacy", "is_featured", "is_free", "max_attendees")
-        }),
-        ("Additional", {
-            "fields": ("external_url", "terms_and_conditions"),
+        ("Recurring Events", {
+            "fields": ("is_recurring", "recurrence_pattern"),
             "classes": ("collapse",)
         }),
+        ("Settings", {
+            "fields": ("is_published", "check_in_policy", "max_attendees")
+        }),
         ("Statistics", {
-            "fields": ("views_count", "tickets_sold_count", "revenue_display"),
+            "fields": ("views_count", "tickets_sold_count"),
             "classes": ("collapse",)
         }),
         ("Timestamps", {
@@ -123,9 +123,9 @@ class EventAdmin(admin.ModelAdmin):
         return obj.tickets_sold
     tickets_sold_count.short_description = "Tickets Sold"
 
-    def revenue_display(self, obj):
-        return f"GHS {obj.revenue_generated}"
-    revenue_display.short_description = "Revenue"
+    def event_status(self, obj):
+        return obj.status
+    event_status.short_description = "Status"
 
 
 @admin.register(TicketType)
@@ -135,16 +135,15 @@ class TicketTypeAdmin(admin.ModelAdmin):
         "event",
         "price",
         "quantity",
-        "quantity_sold",
+        "tickets_sold",
         "quantity_remaining_display",
-        "is_active",
     ]
-    list_filter = ["is_active", "created_at"]
+    list_filter = ["created_at"]
     search_fields = ["name", "event__title"]
-    readonly_fields = ["quantity_sold", "created_at", "updated_at"]
+    readonly_fields = ["tickets_sold", "created_at", "updated_at", "sold_out_at"]
 
     def quantity_remaining_display(self, obj):
-        remaining = obj.quantity_remaining
+        remaining = obj.tickets_remaining
         if remaining <= 0:
             return format_html('<span style="color: red;">SOLD OUT</span>')
         elif remaining < 10:
@@ -153,26 +152,208 @@ class TicketTypeAdmin(admin.ModelAdmin):
     quantity_remaining_display.short_description = "Remaining"
 
 
+@admin.register(Purchase)
+class PurchaseAdmin(admin.ModelAdmin):
+    list_display = [
+        "purchase_id",
+        "buyer_name",
+        "event",
+        "quantity",
+        "status_badge",
+        "total",
+        "created_at",
+    ]
+    list_filter = ["status", "created_at", "event"]
+    search_fields = ["purchase_id", "buyer_name", "buyer_email"]
+    readonly_fields = [
+        "purchase_id",
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "reservation_expires_at",
+    ]
+    date_hierarchy = "created_at"
+
+    fieldsets = (
+        ("Purchase Information", {
+            "fields": ("purchase_id", "user", "event", "ticket_type", "quantity", "status")
+        }),
+        ("Buyer Details", {
+            "fields": ("buyer_name", "buyer_email", "buyer_phone")
+        }),
+        ("Financial", {
+            "fields": ("ticket_price", "subtotal", "service_fee", "total")
+        }),
+        ("Timing", {
+            "fields": ("reserved_at", "reservation_expires_at", "completed_at")
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+            "classes": ("collapse",)
+        }),
+    )
+
+    def status_badge(self, obj):
+        colors = {
+            "reserved": "blue",
+            "pending": "orange",
+            "completed": "green",
+            "failed": "red",
+            "expired": "gray",
+        }
+        color = colors.get(obj.status, "gray")
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color,
+            obj.get_status_display()
+        )
+    status_badge.short_description = "Status"
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = [
+        "payment_id",
+        "purchase",
+        "amount",
+        "provider",
+        "status_badge",
+        "created_at",
+    ]
+    list_filter = ["status", "provider", "created_at"]
+    search_fields = ["payment_id", "reference", "purchase__purchase_id"]
+    readonly_fields = [
+        "payment_id",
+        "provider_response",
+        "created_at",
+        "completed_at",
+        "failed_at",
+    ]
+    date_hierarchy = "created_at"
+
+    fieldsets = (
+        ("Payment Information", {
+            "fields": ("payment_id", "purchase", "amount", "currency", "provider", "status")
+        }),
+        ("Payment Method", {
+            "fields": ("payment_method", "reference", "payment_url")
+        }),
+        ("Provider Details", {
+            "fields": ("provider_response", "failure_reason"),
+            "classes": ("collapse",)
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "completed_at", "failed_at"),
+            "classes": ("collapse",)
+        }),
+    )
+
+    def status_badge(self, obj):
+        colors = {
+            "pending": "orange",
+            "completed": "green",
+            "failed": "red",
+        }
+        color = colors.get(obj.status, "gray")
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color,
+            obj.get_status_display()
+        )
+    status_badge.short_description = "Status"
+
+
 class TicketInline(admin.TabularInline):
     model = Ticket
     extra = 0
     readonly_fields = [
-        "ticket_number",
+        "ticket_id",
         "attendee_name",
         "ticket_type",
-        "price_paid",
         "status",
     ]
     can_delete = False
     fields = [
-        "ticket_number",
+        "ticket_id",
         "attendee_name",
         "ticket_type",
-        "price_paid",
         "status",
     ]
 
 
+@admin.register(Ticket)
+class TicketAdmin(admin.ModelAdmin):
+    list_display = [
+        "ticket_id",
+        "event",
+        "attendee_name",
+        "status_badge",
+        "checked_in_display",
+        "created_at",
+    ]
+    list_filter = ["status", "is_checked_in", "created_at", "event"]
+    search_fields = ["ticket_id", "attendee_name", "attendee_email", "purchase__purchase_id"]
+    readonly_fields = [
+        "ticket_id",
+        "qr_code_display",
+        "created_at",
+        "updated_at",
+        "checked_in_at",
+        "checked_in_by",
+    ]
+    date_hierarchy = "created_at"
+
+    fieldsets = (
+        ("Ticket Information", {
+            "fields": ("ticket_id", "purchase", "event", "ticket_type", "status")
+        }),
+        ("Attendee Details", {
+            "fields": ("attendee_name", "attendee_email", "attendee_phone")
+        }),
+        ("QR Code", {
+            "fields": ("qr_code", "qr_code_display"),
+            "classes": ("collapse",)
+        }),
+        ("Check-in", {
+            "fields": ("is_checked_in", "checked_in_at", "checked_in_by"),
+            "classes": ("collapse",)
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+            "classes": ("collapse",)
+        }),
+    )
+
+    def status_badge(self, obj):
+        colors = {
+            "reserved": "blue",
+            "paid": "green",
+            "cancelled": "red",
+            "used": "purple",
+            "expired": "gray",
+        }
+        color = colors.get(obj.status, "gray")
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color,
+            obj.get_status_display()
+        )
+    status_badge.short_description = "Status"
+
+    def checked_in_display(self, obj):
+        if obj.is_checked_in:
+            return format_html('<span style="color: green;">✓ {}</span>', obj.checked_in_at)
+        return format_html('<span style="color: gray;">Not checked in</span>')
+    checked_in_display.short_description = "Checked In"
+
+    def qr_code_display(self, obj):
+        if obj.qr_code:
+            return format_html('<img src="{}" width="150" height="150" />', obj.qr_code.url)
+        return "No QR Code"
+    qr_code_display.short_description = "QR Code Preview"
+
+
+# Legacy Order model admin
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     list_display = [
@@ -193,7 +374,6 @@ class OrderAdmin(admin.ModelAdmin):
         "updated_at",
         "completed_at",
     ]
-    inlines = [TicketInline]
     date_hierarchy = "created_at"
 
     fieldsets = (
@@ -242,137 +422,6 @@ class OrderAdmin(admin.ModelAdmin):
     def total_tickets_count(self, obj):
         return obj.total_tickets
     total_tickets_count.short_description = "Tickets"
-
-
-@admin.register(Ticket)
-class TicketAdmin(admin.ModelAdmin):
-    list_display = [
-        "ticket_number",
-        "event",
-        "attendee_name",
-        "status_badge",
-        "price_paid",
-        "checked_in_display",
-        "created_at",
-    ]
-    list_filter = ["status", "created_at", "checked_in_at", "event"]
-    search_fields = ["ticket_number", "attendee_name", "attendee_email", "order__order_id"]
-    readonly_fields = [
-        "ticket_number",
-        "qr_code_display",
-        "created_at",
-        "updated_at",
-        "checked_in_at",
-        "checked_in_by",
-    ]
-    date_hierarchy = "created_at"
-
-    fieldsets = (
-        ("Ticket Information", {
-            "fields": ("ticket_number", "order", "event", "ticket_type", "status")
-        }),
-        ("Attendee Details", {
-            "fields": ("attendee_name", "attendee_email", "attendee_phone")
-        }),
-        ("Payment", {
-            "fields": ("price_paid",)
-        }),
-        ("QR Code", {
-            "fields": ("qr_code", "qr_code_display"),
-            "classes": ("collapse",)
-        }),
-        ("Check-in", {
-            "fields": ("checked_in_at", "checked_in_by"),
-            "classes": ("collapse",)
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",)
-        }),
-    )
-
-    def status_badge(self, obj):
-        colors = {
-            "valid": "green",
-            "used": "blue",
-            "cancelled": "red",
-            "refunded": "orange",
-        }
-        color = colors.get(obj.status, "gray")
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = "Status"
-
-    def checked_in_display(self, obj):
-        if obj.checked_in_at:
-            return format_html('<span style="color: green;">✓ {}</span>', obj.checked_in_at)
-        return format_html('<span style="color: gray;">Not checked in</span>')
-    checked_in_display.short_description = "Checked In"
-
-    def qr_code_display(self, obj):
-        if obj.qr_code:
-            return format_html('<img src="{}" width="150" height="150" />', obj.qr_code.url)
-        return "No QR Code"
-    qr_code_display.short_description = "QR Code Preview"
-
-
-@admin.register(Payment)
-class PaymentAdmin(admin.ModelAdmin):
-    list_display = [
-        "payment_id",
-        "order",
-        "amount",
-        "gateway",
-        "status_badge",
-        "created_at",
-    ]
-    list_filter = ["status", "gateway", "created_at"]
-    search_fields = ["payment_id", "order__order_id", "gateway_reference"]
-    readonly_fields = [
-        "payment_id",
-        "gateway_response",
-        "created_at",
-        "updated_at",
-        "completed_at",
-    ]
-    date_hierarchy = "created_at"
-
-    fieldsets = (
-        ("Payment Information", {
-            "fields": ("payment_id", "order", "amount", "gateway", "status")
-        }),
-        ("Gateway Details", {
-            "fields": ("gateway_reference", "gateway_response"),
-            "classes": ("collapse",)
-        }),
-        ("Metadata", {
-            "fields": ("metadata", "ip_address"),
-            "classes": ("collapse",)
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at", "completed_at"),
-            "classes": ("collapse",)
-        }),
-    )
-
-    def status_badge(self, obj):
-        colors = {
-            "pending": "orange",
-            "processing": "blue",
-            "completed": "green",
-            "failed": "red",
-            "refunded": "purple",
-        }
-        color = colors.get(obj.status, "gray")
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = "Status"
 
 
 @admin.register(EventReview)

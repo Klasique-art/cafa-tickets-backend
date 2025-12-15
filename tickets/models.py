@@ -5,11 +5,13 @@ from django.utils import timezone
 from django.utils.text import slugify
 import uuid
 from decimal import Decimal
+from datetime import timedelta
 
 User = get_user_model()
 
 
 class Venue(models.Model):
+    """Legacy venue model - kept for backwards compatibility but not used in new events"""
     name = models.CharField(max_length=255, help_text="Name of the venue")
     address = models.TextField(help_text="Full address of the venue")
     city = models.CharField(max_length=100, help_text="City where venue is located")
@@ -61,7 +63,7 @@ class EventCategory(models.Model):
     icon = models.CharField(
         max_length=50,
         blank=True,
-        help_text="Icon name/class for the category"
+        help_text="Icon name/class for the category (e.g., FaMusic)"
     )
     is_active = models.BooleanField(default=True, help_text="Is category active")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -80,29 +82,35 @@ class EventCategory(models.Model):
             self.slug = slugify(self.name)
         super().save(*args, **kwargs)
 
+    def get_event_count(self):
+        """Get count of published events in this category"""
+        return self.events.filter(is_published=True).count()
+
 
 class Event(models.Model):
-    STATUS_CHOICES = [
-        ("draft", "Draft"),
-        ("published", "Published"),
-        ("cancelled", "Cancelled"),
-        ("completed", "Completed"),
+    """Event model matching the document specification"""
+
+    CHECK_IN_POLICY_CHOICES = [
+        ("single_entry", "Single Entry"),
+        ("multiple_entry", "Multiple Entry"),
+        ("daily_entry", "Daily Entry"),
     ]
 
-    PRIVACY_CHOICES = [
-        ("public", "Public"),
-        ("private", "Private"),
-    ]
-
-    title = models.CharField(max_length=255, help_text="Event title")
+    # Basic Information
+    title = models.CharField(
+        max_length=200,
+        help_text="Event title (5-200 characters)"
+    )
     slug = models.SlugField(max_length=255, unique=True, blank=True)
-    description = models.TextField(help_text="Detailed event description")
+    description = models.TextField(
+        help_text="Full event description with markdown support (min 50 chars)"
+    )
     short_description = models.CharField(
-        max_length=500,
-        blank=True,
-        help_text="Short description for previews"
+        max_length=300,
+        help_text="Short description for previews (20-300 characters)"
     )
 
+    # Category and Organizer
     category = models.ForeignKey(
         EventCategory,
         on_delete=models.SET_NULL,
@@ -110,15 +118,6 @@ class Event(models.Model):
         related_name="events",
         help_text="Event category"
     )
-    venue = models.ForeignKey(
-        Venue,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="events",
-        help_text="Event venue"
-    )
-
     organizer = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -126,69 +125,108 @@ class Event(models.Model):
         help_text="Event organizer"
     )
 
-    banner_image = models.ImageField(
-        upload_to="events/banners/%Y/%m/",
-        help_text="Event banner image"
+    # Payment Profile
+    payment_profile = models.ForeignKey(
+        "users.PaymentProfile",
+        on_delete=models.PROTECT,
+        related_name="events",
+        null=True,
+        blank=True,
+        help_text="Payment profile for receiving event revenue"
     )
-    thumbnail_image = models.ImageField(
-        upload_to="events/thumbnails/%Y/%m/",
+
+    # Venue Information (stored directly on event)
+    venue_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Name of the venue"
+    )
+    venue_address = models.TextField(
+        blank=True,
+        default="",
+        help_text="Full venue address"
+    )
+    venue_city = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="City where event is located"
+    )
+    venue_country = models.CharField(
+        max_length=100,
+        default="Ghana",
+        help_text="Country"
+    )
+    venue_latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        help_text="Latitude coordinate"
+    )
+    venue_longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        help_text="Longitude coordinate"
+    )
+
+    # Images
+    featured_image = models.ImageField(
+        upload_to="events/featured/%Y/%m/",
         blank=True,
         null=True,
-        help_text="Event thumbnail image"
+        help_text="Featured event image (required, max 5MB)"
+    )
+    additional_images = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Additional event images (max 5 images)"
     )
 
-    start_date = models.DateTimeField(help_text="Event start date and time")
-    end_date = models.DateTimeField(help_text="Event end date and time")
+    # Date and Time
+    start_date = models.DateField(null=True, blank=True, help_text="Event start date")
+    end_date = models.DateField(null=True, blank=True, help_text="Event end date")
+    start_time = models.TimeField(null=True, blank=True, help_text="Event start time")
+    end_time = models.TimeField(null=True, blank=True, help_text="Event end time")
 
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default="draft",
-        help_text="Event status"
-    )
-    privacy = models.CharField(
-        max_length=20,
-        choices=PRIVACY_CHOICES,
-        default="public",
-        help_text="Event privacy setting"
-    )
-
-    is_featured = models.BooleanField(
+    # Recurring Events
+    is_recurring = models.BooleanField(
         default=False,
-        help_text="Show event in featured section"
+        help_text="Whether the event repeats on multiple days"
     )
-    is_free = models.BooleanField(
-        default=False,
-        help_text="Is this a free event"
+    recurrence_pattern = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Recurrence pattern (frequency, interval, end_date)"
     )
 
+    # Event Settings
+    check_in_policy = models.CharField(
+        max_length=20,
+        choices=CHECK_IN_POLICY_CHOICES,
+        default="single_entry",
+        help_text="Check-in policy for tickets"
+    )
     max_attendees = models.PositiveIntegerField(
-        null=True,
-        blank=True,
-        help_text="Maximum number of attendees (null = unlimited)"
+        help_text="Maximum number of attendees"
     )
 
-    tags = models.CharField(
-        max_length=500,
-        blank=True,
-        help_text="Comma-separated tags for the event"
+    # Status
+    is_published = models.BooleanField(
+        default=True,
+        help_text="Whether event is published and visible"
     )
 
-    external_url = models.URLField(
-        blank=True,
-        help_text="External event URL (if applicable)"
-    )
-
-    terms_and_conditions = models.TextField(
-        blank=True,
-        help_text="Event-specific terms and conditions"
-    )
-
+    # Tracking
     views_count = models.PositiveIntegerField(
         default=0,
         help_text="Number of times event was viewed"
     )
 
+    # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -197,12 +235,12 @@ class Event(models.Model):
         verbose_name = "Event"
         verbose_name_plural = "Events"
         indexes = [
-            models.Index(fields=["slug"], name="idx_event_slug"),
-            models.Index(fields=["status"], name="idx_event_status"),
-            models.Index(fields=["start_date"], name="idx_event_start"),
-            models.Index(fields=["category"], name="idx_event_category"),
-            models.Index(fields=["organizer"], name="idx_event_organizer"),
-            models.Index(fields=["is_featured"], name="idx_event_featured"),
+            models.Index(fields=["slug"], name="idx_event_slug_v2"),
+            models.Index(fields=["start_date"], name="idx_event_start_v2"),
+            models.Index(fields=["category"], name="idx_event_category_v2"),
+            models.Index(fields=["organizer"], name="idx_event_organizer_v2"),
+            models.Index(fields=["is_published"], name="idx_event_published"),
+            models.Index(fields=["venue_city"], name="idx_event_city"),
         ]
 
     def __str__(self):
@@ -220,61 +258,103 @@ class Event(models.Model):
         super().save(*args, **kwargs)
 
     @property
+    def status(self):
+        """Calculate event status based on dates"""
+        if not self.start_date or not self.end_date or not self.start_time or not self.end_time:
+            return "upcoming"
+
+        now = timezone.now()
+        event_start = timezone.datetime.combine(self.start_date, self.start_time)
+        event_end = timezone.datetime.combine(self.end_date, self.end_time)
+
+        # Make timezone aware if needed
+        if timezone.is_naive(event_start):
+            event_start = timezone.make_aware(event_start)
+        if timezone.is_naive(event_end):
+            event_end = timezone.make_aware(event_end)
+
+        if now < event_start:
+            return "upcoming"
+        elif event_start <= now <= event_end:
+            return "ongoing"
+        else:
+            return "past"
+
+    @property
     def is_upcoming(self):
-        return self.start_date > timezone.now()
+        return self.status == "upcoming"
 
     @property
     def is_ongoing(self):
-        return self.start_date <= timezone.now() <= self.end_date
+        return self.status == "ongoing"
 
     @property
     def is_past(self):
-        return self.end_date < timezone.now()
+        return self.status == "past"
 
     @property
     def tickets_sold(self):
-        return self.tickets.filter(
-            order__status="completed"
-        ).count()
+        """Count of tickets that are paid"""
+        return self.tickets.filter(status="paid").count()
 
     @property
     def tickets_available(self):
-        if self.max_attendees:
-            return self.max_attendees - self.tickets_sold
-        return None
+        return self.max_attendees - self.tickets_sold
 
     @property
     def is_sold_out(self):
-        if self.max_attendees:
-            return self.tickets_sold >= self.max_attendees
-        return False
+        return self.tickets_sold >= self.max_attendees
+
+    @property
+    def lowest_price(self):
+        """Get lowest ticket price"""
+        ticket_type = self.ticket_types.order_by("price").first()
+        return ticket_type.price if ticket_type else Decimal("0.00")
+
+    @property
+    def highest_price(self):
+        """Get highest ticket price"""
+        ticket_type = self.ticket_types.order_by("-price").first()
+        return ticket_type.price if ticket_type else Decimal("0.00")
 
     @property
     def revenue_generated(self):
+        """Calculate total revenue generated from ticket sales"""
         from django.db.models import Sum
-        total = self.orders.filter(
+        total = Purchase.objects.filter(
+            event=self,
             status="completed"
-        ).aggregate(Sum("total_amount"))["total_amount__sum"]
+        ).aggregate(total=Sum("subtotal"))["total"]
         return total or Decimal("0.00")
 
 
 class TicketType(models.Model):
+    """Ticket types for events"""
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,
         related_name="ticket_types",
         help_text="Associated event"
     )
-    name = models.CharField(max_length=100, help_text="Ticket type name (e.g., VIP, Regular)")
-    description = models.TextField(blank=True, help_text="Ticket type description")
+    name = models.CharField(
+        max_length=100,
+        help_text="Ticket type name (e.g., VIP, Regular, Early Bird)"
+    )
+    description = models.TextField(
+        blank=True,
+        help_text="Ticket type description"
+    )
     price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Ticket price"
+        validators=[MinValueValidator(Decimal("10.00"))],
+        help_text="Ticket price (minimum 10.00 GHS)"
     )
-    quantity = models.PositiveIntegerField(help_text="Total number of tickets available")
-    quantity_sold = models.PositiveIntegerField(
+    quantity = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(10000)],
+        help_text="Total number of tickets available"
+    )
+    tickets_sold = models.PositiveIntegerField(
         default=0,
         help_text="Number of tickets sold"
     )
@@ -288,17 +368,21 @@ class TicketType(models.Model):
         validators=[MinValueValidator(1)],
         help_text="Maximum tickets per purchase"
     )
-    sale_start = models.DateTimeField(
+    available_from = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="When ticket sales start"
+        help_text="When this ticket type becomes available"
     )
-    sale_end = models.DateTimeField(
+    available_until = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="When ticket sales end"
+        help_text="When this ticket type stops being available"
     )
-    is_active = models.BooleanField(default=True, help_text="Is ticket type available for sale")
+    sold_out_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When tickets sold out"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -312,26 +396,379 @@ class TicketType(models.Model):
         return f"{self.event.title} - {self.name}"
 
     @property
-    def quantity_remaining(self):
-        return self.quantity - self.quantity_sold
+    def tickets_remaining(self):
+        return self.quantity - self.tickets_sold
+
+    @property
+    def is_available(self):
+        """Check if ticket type is available for purchase"""
+        now = timezone.now()
+
+        # Check if sold out
+        if self.tickets_remaining <= 0:
+            return False
+
+        # Check availability window
+        if self.available_from and now < self.available_from:
+            return False
+        if self.available_until and now > self.available_until:
+            return False
+
+        return True
 
     @property
     def is_sold_out(self):
-        return self.quantity_sold >= self.quantity
+        """Check if ticket type is sold out"""
+        return self.tickets_remaining <= 0
 
     @property
     def is_on_sale(self):
-        now = timezone.now()
-        if not self.is_active:
-            return False
-        if self.sale_start and now < self.sale_start:
-            return False
-        if self.sale_end and now > self.sale_end:
-            return False
-        return not self.is_sold_out
+        """Check if ticket type is currently on sale"""
+        return self.is_available
+
+    @property
+    def quantity_remaining(self):
+        """Alias for tickets_remaining for backward compatibility"""
+        return self.tickets_remaining
+
+    def save(self, *args, **kwargs):
+        # Mark as sold out if tickets_remaining hits zero
+        if self.tickets_remaining <= 0 and not self.sold_out_at:
+            self.sold_out_at = timezone.now()
+        super().save(*args, **kwargs)
 
 
+class Purchase(models.Model):
+    """Purchase tracking - represents ticket purchase attempt"""
+    STATUS_CHOICES = [
+        ("reserved", "Reserved"),
+        ("pending", "Pending Payment"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+        ("expired", "Expired"),
+    ]
+
+    purchase_id = models.CharField(
+        max_length=50,
+        unique=True,
+        editable=False,
+        help_text="Unique purchase identifier (PUR-XXXXXX)"
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="purchases",
+        help_text="User who made the purchase"
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="purchases",
+        help_text="Event for this purchase"
+    )
+    ticket_type = models.ForeignKey(
+        TicketType,
+        on_delete=models.CASCADE,
+        related_name="purchases",
+        help_text="Ticket type purchased"
+    )
+    quantity = models.PositiveIntegerField(help_text="Number of tickets")
+
+    # Buyer Information
+    buyer_name = models.CharField(max_length=255, help_text="Buyer's full name")
+    buyer_email = models.EmailField(help_text="Buyer's email address")
+    buyer_phone = models.CharField(max_length=20, help_text="Buyer's phone number")
+
+    # Pricing
+    ticket_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Price per ticket at time of purchase"
+    )
+    subtotal = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Subtotal (price × quantity)"
+    )
+    service_fee = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Service fee (5%)"
+    )
+    total = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Total amount to pay"
+    )
+
+    # Status and Timing
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="reserved",
+        help_text="Purchase status"
+    )
+    reserved_at = models.DateTimeField(auto_now_add=True)
+    reservation_expires_at = models.DateTimeField(
+        help_text="When reservation expires (10 minutes from creation)"
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Purchase"
+        verbose_name_plural = "Purchases"
+        indexes = [
+            models.Index(fields=["purchase_id"], name="idx_purchase_id"),
+            models.Index(fields=["user"], name="idx_purchase_user"),
+            models.Index(fields=["status"], name="idx_purchase_status"),
+        ]
+
+    def __str__(self):
+        return f"Purchase {self.purchase_id} - {self.buyer_name}"
+
+    def save(self, *args, **kwargs):
+        if not self.purchase_id:
+            self.purchase_id = f"PUR-{uuid.uuid4().hex[:10].upper()}"
+
+        # Set reservation expiry (10 minutes from now)
+        if not self.reservation_expires_at:
+            self.reservation_expires_at = timezone.now() + timedelta(minutes=10)
+
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self):
+        """Check if reservation has expired"""
+        return timezone.now() > self.reservation_expires_at and self.status == "reserved"
+
+
+class Payment(models.Model):
+    """Payment tracking for purchases"""
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+    ]
+
+    PROVIDER_CHOICES = [
+        ("paystack", "Paystack"),
+    ]
+
+    payment_id = models.CharField(
+        max_length=50,
+        unique=True,
+        editable=False,
+        help_text="Unique payment identifier (PAY-XXXXXX)"
+    )
+    purchase = models.OneToOneField(
+        Purchase,
+        on_delete=models.CASCADE,
+        related_name="payment",
+        help_text="Associated purchase"
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Payment amount"
+    )
+    currency = models.CharField(
+        max_length=3,
+        default="GHS",
+        help_text="Currency code"
+    )
+    payment_method = models.CharField(
+        max_length=50,
+        default="card",
+        help_text="Payment method used (card, mobile_money, bank_transfer)"
+    )
+    provider = models.CharField(
+        max_length=20,
+        choices=PROVIDER_CHOICES,
+        default="paystack",
+        help_text="Payment gateway provider"
+    )
+    reference = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Payment gateway reference (e.g., PSK-XYZ123)"
+    )
+    payment_url = models.URLField(
+        blank=True,
+        help_text="Payment gateway URL for customer"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+        help_text="Payment status"
+    )
+    provider_response = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Full provider response data"
+    )
+    failure_reason = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Reason for payment failure"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Payment"
+        verbose_name_plural = "Payments"
+        indexes = [
+            models.Index(fields=["payment_id"], name="idx_payment_id_v2"),
+            models.Index(fields=["reference"], name="idx_payment_reference"),
+            models.Index(fields=["status"], name="idx_payment_status_v2"),
+        ]
+
+    def __str__(self):
+        return f"Payment {self.payment_id} - {self.provider}"
+
+    def save(self, *args, **kwargs):
+        if not self.payment_id:
+            self.payment_id = f"PAY-{uuid.uuid4().hex[:10].upper()}"
+        super().save(*args, **kwargs)
+
+
+class Ticket(models.Model):
+    """Individual ticket issued after successful payment"""
+    STATUS_CHOICES = [
+        ("reserved", "Reserved"),
+        ("paid", "Paid"),
+        ("cancelled", "Cancelled"),
+        ("used", "Used"),
+        ("expired", "Expired"),
+    ]
+
+    ticket_id = models.CharField(
+        max_length=50,
+        unique=True,
+        editable=False,
+        help_text="Unique ticket identifier (TKT-UUID-XXX)"
+    )
+    purchase = models.ForeignKey(
+        Purchase,
+        on_delete=models.CASCADE,
+        related_name="tickets",
+        help_text="Associated purchase"
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="tickets",
+        help_text="Event this ticket is for"
+    )
+    ticket_type = models.ForeignKey(
+        TicketType,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="tickets",
+        help_text="Type of ticket"
+    )
+
+    # Attendee Information
+    attendee_name = models.CharField(
+        max_length=255,
+        help_text="Name of the ticket holder"
+    )
+    attendee_email = models.EmailField(
+        help_text="Email of the ticket holder"
+    )
+    attendee_phone = models.CharField(
+        max_length=20,
+        help_text="Phone of the ticket holder"
+    )
+
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="reserved",
+        help_text="Ticket status"
+    )
+
+    # QR Code
+    qr_code = models.ImageField(
+        upload_to="tickets/qr_codes/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="QR code for ticket validation"
+    )
+
+    # Check-in
+    is_checked_in = models.BooleanField(
+        default=False,
+        help_text="Whether ticket has been checked in"
+    )
+    checked_in_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When ticket was checked in"
+    )
+    checked_in_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checked_in_tickets",
+        help_text="Staff who checked in this ticket"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Ticket"
+        verbose_name_plural = "Tickets"
+        indexes = [
+            models.Index(fields=["ticket_id"], name="idx_ticket_id_v2"),
+            models.Index(fields=["event"], name="idx_ticket_event_v2"),
+            models.Index(fields=["status"], name="idx_ticket_status_v2"),
+            models.Index(fields=["purchase"], name="idx_ticket_purchase"),
+        ]
+
+    def __str__(self):
+        return f"Ticket {self.ticket_id} - {self.attendee_name}"
+
+    def save(self, *args, **kwargs):
+        if not self.ticket_id:
+            self.ticket_id = f"TKT-{uuid.uuid4().hex.upper()}"
+        super().save(*args, **kwargs)
+
+    @property
+    def is_valid(self):
+        """Check if ticket is valid for entry"""
+        return self.status == "paid" and not self.is_checked_in
+
+    @property
+    def can_check_in(self):
+        """Check if ticket can be checked in"""
+        if self.status != "paid":
+            return False
+        if self.is_checked_in:
+            return False
+        return True
+
+    @property
+    def ticket_number(self):
+        """Alias for ticket_id for backward compatibility"""
+        return self.ticket_id
+
+
+# Legacy models kept for backwards compatibility
 class Order(models.Model):
+    """Legacy order model - kept for backwards compatibility"""
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("processing", "Processing"),
@@ -358,7 +795,6 @@ class Order(models.Model):
         related_name="orders",
         help_text="Event for this order"
     )
-
     total_amount = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -372,14 +808,12 @@ class Order(models.Model):
         validators=[MinValueValidator(Decimal("0.00"))],
         help_text="Service fee"
     )
-
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
         default="pending",
         help_text="Order status"
     )
-
     buyer_email = models.EmailField(help_text="Buyer's email address")
     buyer_phone = models.CharField(
         max_length=20,
@@ -387,7 +821,6 @@ class Order(models.Model):
         help_text="Buyer's phone number"
     )
     buyer_name = models.CharField(max_length=255, help_text="Buyer's full name")
-
     payment_method = models.CharField(
         max_length=50,
         blank=True,
@@ -398,9 +831,7 @@ class Order(models.Model):
         blank=True,
         help_text="External payment reference"
     )
-
     notes = models.TextField(blank=True, help_text="Additional notes")
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(
@@ -426,12 +857,8 @@ class Order(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.order_id:
-            self.order_id = self.generate_order_id()
+            self.order_id = f"ORD-{uuid.uuid4().hex[:12].upper()}"
         super().save(*args, **kwargs)
-
-    @staticmethod
-    def generate_order_id():
-        return f"ORD-{uuid.uuid4().hex[:12].upper()}"
 
     @property
     def total_tickets(self):
@@ -442,234 +869,8 @@ class Order(models.Model):
         return self.total_amount + self.service_fee
 
 
-class Ticket(models.Model):
-    STATUS_CHOICES = [
-        ("valid", "Valid"),
-        ("used", "Used"),
-        ("cancelled", "Cancelled"),
-        ("refunded", "Refunded"),
-    ]
-
-    ticket_number = models.CharField(
-        max_length=100,
-        unique=True,
-        editable=False,
-        help_text="Unique ticket identifier"
-    )
-    order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="tickets",
-        help_text="Associated order"
-    )
-    event = models.ForeignKey(
-        Event,
-        on_delete=models.CASCADE,
-        related_name="tickets",
-        help_text="Event this ticket is for"
-    )
-    ticket_type = models.ForeignKey(
-        TicketType,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name="tickets",
-        help_text="Type of ticket"
-    )
-
-    attendee_name = models.CharField(
-        max_length=255,
-        help_text="Name of the ticket holder"
-    )
-    attendee_email = models.EmailField(
-        blank=True,
-        help_text="Email of the ticket holder"
-    )
-    attendee_phone = models.CharField(
-        max_length=20,
-        blank=True,
-        help_text="Phone of the ticket holder"
-    )
-
-    price_paid = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Price paid for this ticket"
-    )
-
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default="valid",
-        help_text="Ticket status"
-    )
-
-    qr_code = models.ImageField(
-        upload_to="tickets/qr_codes/%Y/%m/",
-        blank=True,
-        null=True,
-        help_text="QR code for ticket validation"
-    )
-
-    checked_in_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When ticket was checked in"
-    )
-    checked_in_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="checked_in_tickets",
-        help_text="Staff who checked in this ticket"
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        verbose_name = "Ticket"
-        verbose_name_plural = "Tickets"
-        indexes = [
-            models.Index(fields=["ticket_number"], name="idx_ticket_number"),
-            models.Index(fields=["order"], name="idx_ticket_order"),
-            models.Index(fields=["event"], name="idx_ticket_event"),
-            models.Index(fields=["status"], name="idx_ticket_status"),
-        ]
-
-    def __str__(self):
-        return f"Ticket {self.ticket_number} - {self.attendee_name}"
-
-    def save(self, *args, **kwargs):
-        if not self.ticket_number:
-            self.ticket_number = self.generate_ticket_number()
-        super().save(*args, **kwargs)
-
-    @staticmethod
-    def generate_ticket_number():
-        return f"TKT-{uuid.uuid4().hex[:16].upper()}"
-
-    @property
-    def is_valid(self):
-        return self.status == "valid" and not self.checked_in_at
-
-    @property
-    def can_check_in(self):
-        if self.status != "valid":
-            return False
-        if self.checked_in_at:
-            return False
-        return self.event.start_date <= timezone.now() <= self.event.end_date
-
-
-class Payment(models.Model):
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("processing", "Processing"),
-        ("completed", "Completed"),
-        ("failed", "Failed"),
-        ("refunded", "Refunded"),
-    ]
-
-    PAYMENT_GATEWAY_CHOICES = [
-        ("paystack", "Paystack"),
-        ("stripe", "Stripe"),
-        ("flutterwave", "Flutterwave"),
-        ("cash", "Cash"),
-        ("bank_transfer", "Bank Transfer"),
-    ]
-
-    payment_id = models.CharField(
-        max_length=100,
-        unique=True,
-        editable=False,
-        help_text="Unique payment identifier"
-    )
-    order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="payments",
-        help_text="Associated order"
-    )
-
-    amount = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Payment amount"
-    )
-
-    gateway = models.CharField(
-        max_length=50,
-        choices=PAYMENT_GATEWAY_CHOICES,
-        help_text="Payment gateway used"
-    )
-
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default="pending",
-        help_text="Payment status"
-    )
-
-    gateway_reference = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Gateway transaction reference"
-    )
-    gateway_response = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Full gateway response data"
-    )
-
-    metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Additional payment metadata"
-    )
-
-    ip_address = models.GenericIPAddressField(
-        null=True,
-        blank=True,
-        help_text="IP address of the payer"
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    completed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When payment was completed"
-    )
-
-    class Meta:
-        ordering = ["-created_at"]
-        verbose_name = "Payment"
-        verbose_name_plural = "Payments"
-        indexes = [
-            models.Index(fields=["payment_id"], name="idx_payment_id"),
-            models.Index(fields=["order"], name="idx_payment_order"),
-            models.Index(fields=["status"], name="idx_payment_status"),
-            models.Index(fields=["gateway"], name="idx_payment_gateway"),
-        ]
-
-    def __str__(self):
-        return f"Payment {self.payment_id} - {self.gateway}"
-
-    def save(self, *args, **kwargs):
-        if not self.payment_id:
-            self.payment_id = self.generate_payment_id()
-        super().save(*args, **kwargs)
-
-    @staticmethod
-    def generate_payment_id():
-        return f"PAY-{uuid.uuid4().hex[:12].upper()}"
-
-
 class EventReview(models.Model):
+    """Event reviews"""
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,

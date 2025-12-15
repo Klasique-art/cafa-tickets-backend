@@ -76,13 +76,12 @@ class TicketTypeSerializer(serializers.ModelSerializer):
             "description",
             "price",
             "quantity",
-            "quantity_sold",
+            "tickets_sold",
             "quantity_remaining",
             "min_purchase",
             "max_purchase",
-            "sale_start",
-            "sale_end",
-            "is_active",
+            "available_from",
+            "available_until",
             "is_sold_out",
             "is_on_sale",
             "created_at",
@@ -90,7 +89,7 @@ class TicketTypeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
-            "quantity_sold",
+            "tickets_sold",
             "created_at",
             "updated_at",
         ]
@@ -275,6 +274,7 @@ class TicketSerializer(serializers.ModelSerializer):
     ticket_type = TicketTypeSerializer(read_only=True)
     is_valid = serializers.ReadOnlyField()
     can_check_in = serializers.ReadOnlyField()
+    price_paid = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -303,6 +303,12 @@ class TicketSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_price_paid(self, obj):
+        """Get ticket price from purchase"""
+        if obj.purchase:
+            return obj.purchase.ticket_price
+        return None
 
 
 class OrderItemSerializer(serializers.Serializer):
@@ -361,7 +367,7 @@ class CreateOrderSerializer(serializers.Serializer):
     buyer_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     payment_gateway = serializers.ChoiceField(
-        choices=Payment.PAYMENT_GATEWAY_CHOICES
+        choices=Payment.PROVIDER_CHOICES
     )
 
     def validate(self, data):

@@ -1,40 +1,90 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import (
-    VenueViewSet,
-    EventCategoryViewSet,
-    EventViewSet,
-    TicketTypeViewSet,
-    OrderViewSet,
-    TicketViewSet,
-    CreateOrderView,
-    CheckInView,
-    PaymentWebhookView,
+"""
+Tickets App URL Configuration
+Matches the API specification from documentation
+"""
+from django.urls import path
+
+# Event Views
+from .event_views import (
+    EventCategoryListView,
+    EventListView,
+    PastEventsListView,
+    EventDetailView,
+    EventCreateView,
+    EventUpdateView,
     MyEventsView,
-    MyOrdersView,
-    MyTicketsView,
-    EventSearchView,
-    FeaturedEventsView,
-    UpcomingEventsView,
+    MyEventDetailView,
+    CreateTicketTypeView,
 )
 
-router = DefaultRouter()
-router.register(r"venues", VenueViewSet, basename="venue")
-router.register(r"categories", EventCategoryViewSet, basename="category")
-router.register(r"events", EventViewSet, basename="event")
-router.register(r"ticket-types", TicketTypeViewSet, basename="tickettype")
-router.register(r"orders", OrderViewSet, basename="order")
-router.register(r"tickets", TicketViewSet, basename="ticket")
+# Purchase Views
+from .purchase_views import (
+    InitiatePurchaseView,
+    PaymentWebhookView,
+    PaymentStatusView,
+    CancelPurchaseView,
+    ResendTicketsView,
+)
+
+# Dashboard and Ticket Management Views
+from .ticket_dashboard_views import (
+    MyTicketsView,
+    TicketDetailView,
+    CheckInTicketView,
+    EventAttendeesView,
+    UserDashboardStatsView,
+    EventAnalyticsView,
+    AttendedEventsView,
+    DownloadTicketView,
+)
 
 urlpatterns = [
-    path("", include(router.urls)),
-    path("orders/create/", CreateOrderView.as_view(), name="create-order"),
-    path("tickets/check-in/", CheckInView.as_view(), name="check-in"),
-    path("payments/webhook/", PaymentWebhookView.as_view(), name="payment-webhook"),
-    path("my/events/", MyEventsView.as_view(), name="my-events"),
-    path("my/orders/", MyOrdersView.as_view(), name="my-orders"),
-    path("my/tickets/", MyTicketsView.as_view(), name="my-tickets"),
-    path("search/", EventSearchView.as_view(), name="event-search"),
-    path("featured/", FeaturedEventsView.as_view(), name="featured-events"),
-    path("upcoming/", UpcomingEventsView.as_view(), name="upcoming-events"),
+    # ============================================================================
+    # EVENT CATEGORIES
+    # ============================================================================
+    path('event-categories/', EventCategoryListView.as_view(), name='event-categories'),
+
+    # ============================================================================
+    # EVENT LISTINGS
+    # ============================================================================
+    path('events/', EventListView.as_view(), name='event-list'),
+    path('events/past/', PastEventsListView.as_view(), name='past-events'),
+
+    # Event Creation & Management (must come before <slug> to avoid conflicts)
+    path('events/create/', EventCreateView.as_view(), name='event-create'),
+    path('events/my-events/', MyEventsView.as_view(), name='my-events'),
+    path('events/my-events/<str:slug_or_id>/', MyEventDetailView.as_view(), name='my-event-detail'),
+
+    # Event Detail (must come after specific paths to avoid slug conflicts)
+    path('events/<slug:slug>/', EventDetailView.as_view(), name='event-detail'),
+    path('events/<int:pk>/update/', EventUpdateView.as_view(), name='event-update'),
+
+    # Event Analytics & Attendees (Organizer)
+    path('events/<int:id>/analytics/', EventAnalyticsView.as_view(), name='event-analytics'),
+    path('events/<int:id>/attendees/', EventAttendeesView.as_view(), name='event-attendees'),
+    path('events/<int:id>/checkin/', CheckInTicketView.as_view(), name='event-checkin'),
+
+    # Ticket Types
+    path('events/<int:event_id>/tickets/', CreateTicketTypeView.as_view(), name='create-ticket-type'),
+
+    # ============================================================================
+    # TICKET PURCHASE
+    # ============================================================================
+    path('tickets/purchase/', InitiatePurchaseView.as_view(), name='ticket-purchase'),
+    path('tickets/purchase/<str:purchase_id>/cancel/', CancelPurchaseView.as_view(), name='cancel-purchase'),
+
+    # ============================================================================
+    # TICKET MANAGEMENT
+    # ============================================================================
+    path('tickets/my-tickets/', MyTicketsView.as_view(), name='my-tickets'),
+    path('tickets/attended-events/', AttendedEventsView.as_view(), name='attended-events'),
+    path('tickets/<str:ticket_id>/', TicketDetailView.as_view(), name='ticket-detail'),
+    path('tickets/<str:ticket_id>/download/', DownloadTicketView.as_view(), name='download-ticket'),
+
+    # ============================================================================
+    # PAYMENTS
+    # ============================================================================
+    path('payments/webhook/', PaymentWebhookView.as_view(), name='payment-webhook'),
+    path('payments/<str:payment_id>/status/', PaymentStatusView.as_view(), name='payment-status'),
+    path('payments/<str:payment_id>/resend-tickets/', ResendTicketsView.as_view(), name='resend-tickets'),
 ]

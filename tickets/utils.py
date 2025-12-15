@@ -28,10 +28,17 @@ def generate_qr_code(data, filename="qr_code.png"):
 
 
 def generate_ticket_qr_code(ticket):
-    qr_data = f"{settings.FRONTEND_URL}/verify-ticket/{ticket.ticket_number}"
-    qr_code_file = generate_qr_code(qr_data, f"ticket_{ticket.ticket_number}.png")
-    ticket.qr_code.save(f"ticket_{ticket.ticket_number}.png", qr_code_file, save=True)
-    return ticket
+    """Generate QR code for new ticket model"""
+    import json
+
+    qr_data = json.dumps({
+        'ticket_id': ticket.ticket_id,
+        'event_id': ticket.event.id,
+        'verification_hash': ticket.ticket_id
+    })
+
+    qr_code_file = generate_qr_code(qr_data, f"ticket_{ticket.ticket_id}.png")
+    return qr_code_file
 
 
 def send_order_confirmation_email(order):

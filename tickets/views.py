@@ -164,8 +164,8 @@ class EventViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             has_attended = Ticket.objects.filter(
                 event=event,
-                order__user=request.user,
-                order__status="completed",
+                purchase__user=request.user,
+                purchase__status="completed",
             ).exists()
 
             serializer.save(
@@ -368,7 +368,7 @@ class TicketViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         if user.is_staff:
             return Ticket.objects.all()
-        return Ticket.objects.filter(order__user=user)
+        return Ticket.objects.filter(purchase__user=user)
 
     @action(detail=True, methods=["get"])
     def download(self, request, pk=None):
@@ -505,7 +505,7 @@ class MyTicketsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Ticket.objects.filter(order__user=self.request.user).order_by("-created_at")
+        return Ticket.objects.filter(purchase__user=self.request.user).order_by("-created_at")
 
 
 class EventSearchView(APIView):
