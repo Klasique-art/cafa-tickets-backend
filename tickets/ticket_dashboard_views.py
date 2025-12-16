@@ -50,7 +50,7 @@ class TicketDetailView(APIView):
     """
     GET /api/v1/tickets/{ticket_id}/
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permissions_classes = [permissions.IsAuthenticated]
 
     def get(self, request, ticket_id):
         ticket = get_object_or_404(
@@ -210,21 +210,26 @@ class EventAttendeesView(generics.ListAPIView):
 
 class UserDashboardStatsView(APIView):
     """
-    GET /api/v1/users/stats/
+    GET /api/v1/auth/stats/
+    Comprehensive user statistics including purchasing, organizing, and activity data
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
+        now = timezone.now()
 
-        # Purchasing stats
+        # Purchasing stats - tickets the user bought
         tickets = Ticket.objects.filter(purchase__user=user, status='paid')
         total_spent = Purchase.objects.filter(
             user=user,
             status='completed'
         ).aggregate(total=Sum('total'))['total'] or 0
 
-        # Organizing stats
+        # Events attended (checked in)
+        events_attended = tickets.filter(is_checked_in=True).values('event').distinct().count()
+
+        # Organizing stats - events the user created
         events_created = Event.objects.filter(organizer=user)
         total_revenue = Purchase.objects.filter(
             event__organizer=user,
@@ -236,27 +241,163 @@ class UserDashboardStatsView(APIView):
             status='paid'
         ).count()
 
+        # Tickets by category breakdown
+        tickets_by_category = []
+        category_stats = tickets.values(
+            'event__category__name'
+        ).annotate(
+            count=Count('id'),
+            total_spent=Sum('ticket_type__price')
+        ).order_by('-count')
+
+        for stat in category_stats:
+            if stat['event__category__name']:
+                tickets_by_category.append({
+                    'category': stat['event__category__name'],
+                    'count': stat['count'],
+                    'total_spent': str(stat['total_spent'] or 0)
+                })
+
+        # Upcoming and past events for user (as attendee)
+        upcoming_events = tickets.filter(event__start_date__gte=now.date()).values('event').distinct().count()
+        past_events = tickets.filter(event__start_date__lt=now.date()).values('event').distinct().count()
+
+        # Best selling event
+        best_selling_event = None
+        best_event_data = events_created.annotate(
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid'))
+        ).order_by('-tickets_sold').first()
+
+        if best_event_data:
+            best_selling_event = {
+                'id': best_event_data.id,
+                'title': best_event_data.title,
+                'tickets_sold': best_event_data.tickets_sold
+            }
+
+        # Revenue by month (last 6 months)
+        from datetime import timedelta
+        from django.db.models.functions import TruncMonth
+        
+        six_months_ago = now - timedelta(days=180)
+        revenue_by_month = []
+        
+        monthly_revenue = Purchase.objects.filter(
+            event__organizer=user,
+            status='completed',
+            created_at__gte=six_months_ago
+        ).annotate(
+            month=TruncMonth('created_at')
+        ).values('month').annotate(
+            revenue=Sum('total'),
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid'))
+        ).order_by('-month')
+
+        for month_data in monthly_revenue:
+            revenue_by_month.append({
+                'month': month_data['month'].strftime('%Y-%m'),
+                'revenue': str(month_data['revenue'] or 0),
+                'tickets_sold': month_data['tickets_sold']
+            })
+
+        # Recent activity (last 10 activities)
+        recent_activity = []
+        
+        # Recent ticket purchases
+        recent_purchases = Purchase.objects.filter(
+            user=user,
+            status='completed'
+        ).order_by('-created_at')[:5]
+        
+        for purchase in recent_purchases:
+            recent_activity.append({
+                'type': 'ticket_purchase',
+                'event_title': purchase.event.title,
+                'date': purchase.created_at.isoformat(),
+                'amount': str(purchase.total)
+            })
+
+        # Recent events created
+        recent_events_created = events_created.order_by('-created_at')[:3]
+        for event in recent_events_created:
+            recent_activity.append({
+                'type': 'event_created',
+                'event_title': event.title,
+                'date': event.created_at.isoformat()
+            })
+
+        # Recent ticket sales (for organizer)
+        recent_sales = Purchase.objects.filter(
+            event__organizer=user,
+            status='completed'
+        ).order_by('-created_at')[:3]
+        
+        for sale in recent_sales:
+            recent_activity.append({
+                'type': 'ticket_sale',
+                'event_title': sale.event.title,
+                'date': sale.created_at.isoformat(),
+                'amount': str(sale.total)
+            })
+
+        # Sort by date and limit to 10
+        recent_activity.sort(key=lambda x: x['date'], reverse=True)
+        recent_activity = recent_activity[:10]
+
+        # Calculate average tickets per event
+        avg_tickets_per_event = 0
+        if events_created.count() > 0:
+            avg_tickets_per_event = round(total_tickets_sold / events_created.count(), 1)
+
+        # Total attendees (unique checked-in tickets)
+        total_attendees = Ticket.objects.filter(
+            event__organizer=user,
+            status='paid',
+            is_checked_in=True
+        ).count()
+
+        account_age = now - user.date_joined
+        account_age_days = account_age.days
+
+        # If less than 1 day old, calculate hours
+        if account_age_days == 0:
+            account_age_hours = int(account_age.total_seconds() / 3600)
+            account_age_display = f"{account_age_hours}h" if account_age_hours > 0 else "Just now"
+        else:
+            account_age_display = f"{account_age_days}d"
+
         return Response({
             'user_id': user.id,
             'username': user.username,
             'overview': {
                 'tickets_purchased': tickets.count(),
                 'events_organized': events_created.count(),
+                'events_attended': events_attended,
                 'total_spent': str(total_spent),
                 'total_revenue': str(total_revenue),
-                'account_age_days': (timezone.now() - user.date_joined).days
+                'account_age_days': account_age_days,
+                'account_age_display': account_age_display
             },
             'purchasing_stats': {
-                'active_tickets': tickets.filter(event__start_date__gte=timezone.now().date()).count(),
+                'active_tickets': tickets.filter(event__start_date__gte=now.date()).count(),
                 'used_tickets': tickets.filter(is_checked_in=True).count(),
                 'total_spent': str(total_spent),
+                'tickets_by_category': tickets_by_category,
+                'upcoming_events': upcoming_events,
+                'past_events': past_events
             },
             'organizing_stats': {
                 'total_events_created': events_created.count(),
-                'active_events': events_created.filter(is_published=True, start_date__gte=timezone.now().date()).count(),
+                'active_events': events_created.filter(is_published=True, start_date__gte=now.date()).count(),
+                'past_events': events_created.filter(start_date__lt=now.date()).count(),
                 'total_tickets_sold': total_tickets_sold,
                 'total_revenue': str(total_revenue),
-            }
+                'total_attendees': total_attendees,
+                'average_tickets_per_event': avg_tickets_per_event,
+                'best_selling_event': best_selling_event,
+                'revenue_by_month': revenue_by_month
+            },
+            'recent_activity': recent_activity
         })
 
 

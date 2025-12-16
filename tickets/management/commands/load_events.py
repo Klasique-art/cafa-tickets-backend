@@ -50,6 +50,64 @@ class Command(BaseCommand):
 
         # Sample events data
         events_data = [
+            # ============== PAST EVENTS (negative offset = days AGO) ==============
+            {
+                "title": "Jazz Night at Alliance",
+                "category": "music",
+                "short_description": "An evening of smooth jazz classics",
+                "description": "Experience an unforgettable night of smooth jazz featuring local and international artists. A perfect blend of classic and contemporary jazz in an intimate setting.",
+                "featured_image": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800",
+                "venue_name": "Alliance Française",
+                "venue_city": "Accra",
+                "venue_address": "Airport Residential Area, Accra",
+                "start_date_offset": -30,  # 30 days AGO (PAST EVENT)
+                "start_time": "19:00:00",
+                "end_time": "23:00:00",
+                "max_attendees": 180,
+                "ticket_types": [
+                    {"name": "Regular", "price": "75.00", "quantity": 120},
+                    {"name": "VIP", "price": "150.00", "quantity": 60},
+                ]
+            },
+            {
+                "title": "Tech Startup Pitch Competition",
+                "category": "business-networking",
+                "short_description": "Watch Ghana's brightest startups compete",
+                "description": "An exciting pitch competition where 10 selected startups presented their innovative solutions to a panel of investors and judges. Winner received $50,000 in seed funding.",
+                "featured_image": "https://images.unsplash.com/photo-1556761175-b413da4baf72?w=800",
+                "venue_name": "MEST Africa",
+                "venue_city": "Accra",
+                "venue_address": "East Legon, Accra",
+                "start_date_offset": -45,  # 45 days AGO (PAST EVENT)
+                "start_time": "14:00:00",
+                "end_time": "19:00:00",
+                "max_attendees": 200,
+                "ticket_types": [
+                    {"name": "General Admission", "price": "50.00", "quantity": 150},
+                    {"name": "VIP (Front Row)", "price": "100.00", "quantity": 50},
+                ]
+            },
+            {
+                "title": "Accra Fashion Week 2025",
+                "category": "arts-culture",
+                "short_description": "Runway shows from Ghana's top designers",
+                "description": "A spectacular showcase of African fashion featuring 20+ designers, models, and fashion enthusiasts. Three days of runway shows, exhibitions, and networking events.",
+                "featured_image": "https://images.unsplash.com/photo-1469334031218-e382a71b716b?w=800",
+                "venue_name": "Accra International Conference Centre",
+                "venue_city": "Accra",
+                "venue_address": "Liberia Road, Accra",
+                "start_date_offset": -15,  # 15 days AGO (PAST EVENT)
+                "start_time": "18:00:00",
+                "end_time": "22:00:00",
+                "max_attendees": 500,
+                "ticket_types": [
+                    {"name": "General Admission", "price": "100.00", "quantity": 300},
+                    {"name": "VIP Lounge", "price": "250.00", "quantity": 150},
+                    {"name": "VVIP Front Row", "price": "500.00", "quantity": 50},
+                ]
+            },
+            
+            # ============== FUTURE EVENTS (positive offset = days FROM NOW) ==============
             {
                 "title": "Afrobeats Night",
                 "category": "music",
