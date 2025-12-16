@@ -415,6 +415,207 @@ class CancelPurchaseView(APIView):
             'tickets_released': tickets_released
         })
 
+class PaymentHistoryView(APIView):
+    """
+    GET /api/v1/payments/
+    Get user's complete payment history with summary
+    Query params: status (completed, pending, failed), date_from, date_to, page, page_size
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from rest_framework.pagination import PageNumberPagination
+        from datetime import datetime
+        
+        # Get user's payments
+        payments = Payment.objects.filter(
+            purchase__user=request.user
+        ).select_related(
+            'purchase__event',
+            'purchase__ticket_type'
+        ).prefetch_related(
+            'purchase__tickets__ticket_type'
+        ).order_by('-created_at')
+
+        # Filter by status
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            payments = payments.filter(status=status_filter)
+
+        # Filter by date range
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        
+        if date_from:
+            try:
+                from_date = datetime.fromisoformat(date_from)
+                payments = payments.filter(created_at__gte=from_date)
+            except ValueError:
+                pass  # Ignore invalid date format
+        
+        if date_to:
+            try:
+                to_date = datetime.fromisoformat(date_to)
+                # Set to end of day (23:59:59)
+                to_date = to_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                payments = payments.filter(created_at__lte=to_date)
+            except ValueError:
+                pass  # Ignore invalid date format
+
+        # Calculate summary
+        all_payments = Payment.objects.filter(purchase__user=request.user)
+        total_spent = sum(float(p.amount) for p in all_payments.filter(status='completed'))
+        total_transactions = all_payments.count()
+        completed_transactions = all_payments.filter(status='completed').count()
+        pending_transactions = all_payments.filter(status='pending').count()
+
+        # Paginate
+        paginator = PageNumberPagination()
+        paginator.page_size = int(request.query_params.get('page_size', 10))
+        paginated_payments = paginator.paginate_queryset(payments, request)
+
+        # Build results
+        results = []
+        for payment in paginated_payments:
+            purchase = payment.purchase
+            event = purchase.event
+            
+            # Get tickets info
+            tickets_info = []
+            for ticket in purchase.tickets.all():
+                tickets_info.append({
+                    'ticket_id': ticket.ticket_id,
+                    'ticket_type': ticket.ticket_type.name if ticket.ticket_type else 'N/A',
+                    'price': str(ticket.ticket_type.price if ticket.ticket_type else purchase.ticket_price)
+                })
+
+            results.append({
+                'payment_id': payment.payment_id,
+                'reference': payment.reference,
+                'amount': str(payment.amount),
+                'currency': payment.currency,
+                'payment_method': payment.payment_method,
+                'provider': payment.provider,
+                'status': payment.status,
+                'created_at': payment.created_at.isoformat(),
+                'completed_at': payment.completed_at.isoformat() if payment.completed_at else None,
+                'event': {
+                    'id': event.id,
+                    'title': event.title,
+                    'slug': event.slug,
+                    'featured_image': request.build_absolute_uri(event.featured_image.url) if event.featured_image else None,
+                    'start_date': event.start_date.isoformat()
+                },
+                'tickets': tickets_info,
+                'fees': {
+                    'service_fee': str(purchase.service_fee),
+                    'total_paid': str(purchase.total)
+                }
+            })
+
+        # Build response
+        response = {
+            'count': paginator.page.paginator.count,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+            'summary': {
+                'total_spent': f"{total_spent:.2f}",
+                'total_transactions': total_transactions,
+                'completed_transactions': completed_transactions,
+                'pending_transactions': pending_transactions
+            },
+            'results': results
+        }
+
+        return Response(response)
+
+
+class PaymentDetailView(APIView):
+    """
+    GET /api/v1/payments/{payment_id}/
+    Get detailed payment information
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, payment_id):
+        payment = get_object_or_404(
+            Payment,
+            payment_id=payment_id,
+            purchase__user=request.user
+        )
+
+        purchase = payment.purchase
+        event = purchase.event
+
+        # Extract card details from provider_response if available
+        card_details = None
+        if payment.provider_response and 'authorization' in payment.provider_response:
+            auth = payment.provider_response['authorization']
+            card_details = {
+                'brand': auth.get('card_type', auth.get('brand', 'Unknown')),
+                'last4': auth.get('last4', '****'),
+                'exp_month': auth.get('exp_month', ''),
+                'exp_year': auth.get('exp_year', '')
+            }
+
+        # Build tickets info
+        tickets_info = []
+        for ticket in purchase.tickets.all():
+            tickets_info.append({
+                'ticket_id': ticket.ticket_id,
+                'qr_code': request.build_absolute_uri(ticket.qr_code.url) if ticket.qr_code else None,
+                'ticket_type': {
+                    'id': ticket.ticket_type.id if ticket.ticket_type else None,
+                    'name': ticket.ticket_type.name if ticket.ticket_type else 'N/A',
+                    'price': str(ticket.ticket_type.price if ticket.ticket_type else purchase.ticket_price)
+                },
+                'attendee_name': ticket.attendee_name,
+                'status': ticket.status
+            })
+
+        # Build response
+        response_data = {
+            'payment_id': payment.payment_id,
+            'reference': payment.reference,
+            'amount': str(payment.amount),
+            'currency': payment.currency,
+            'payment_method': payment.payment_method,
+            'provider': payment.provider,
+            'status': payment.status,
+            'created_at': payment.created_at.isoformat(),
+            'completed_at': payment.completed_at.isoformat() if payment.completed_at else None,
+            'event': {
+                'id': event.id,
+                'title': event.title,
+                'slug': event.slug,
+                'featured_image': request.build_absolute_uri(event.featured_image.url) if event.featured_image else None,
+                'organizer': {
+                    'id': event.organizer.id,
+                    'username': event.organizer.username,
+                    'full_name': event.organizer.full_name or event.organizer.username
+                },
+                'venue_name': event.venue_name,
+                'start_date': event.start_date.isoformat(),
+                'start_time': str(event.start_time) if event.start_time else None
+            },
+            'tickets': tickets_info,
+            'breakdown': {
+                'subtotal': str(purchase.subtotal),
+                'service_fee': str(purchase.service_fee),
+                'total': str(purchase.total)
+            },
+            'billing_info': {
+                'name': purchase.buyer_name,
+                'email': purchase.buyer_email,
+                'phone': purchase.buyer_phone
+            }
+        }
+
+        # Add card_details if available
+        if card_details:
+            response_data['card_details'] = card_details
+
+        return Response(response_data)
 
 class ResendTicketsView(APIView):
     """

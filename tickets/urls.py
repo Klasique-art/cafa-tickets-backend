@@ -24,6 +24,8 @@ from .purchase_views import (
     PaymentStatusView,
     CancelPurchaseView,
     ResendTicketsView,
+    PaymentHistoryView,
+    PaymentDetailView,
 )
 
 # Dashboard and Ticket Management Views
@@ -36,6 +38,7 @@ from .ticket_dashboard_views import (
     EventAnalyticsView,
     AttendedEventsView,
     DownloadTicketView,
+    OrganizerRevenueView,
 )
 
 urlpatterns = [
@@ -83,9 +86,23 @@ urlpatterns = [
     path('tickets/<str:ticket_id>/download/', DownloadTicketView.as_view(), name='download-ticket'),
 
     # ============================================================================
+    # ORGANIZER REVENUE
+    # ============================================================================
+    path('organizers/revenue/', OrganizerRevenueView.as_view(), name='organizer-revenue'),
+
+    # ============================================================================
     # PAYMENTS
     # ============================================================================
+    # Webhook (must come first - specific path)
     path('payments/webhook/', PaymentWebhookView.as_view(), name='payment-webhook'),
+    
+    # Payment History (list all payments)
+    path('payments/', PaymentHistoryView.as_view(), name='payment-history'),
+    
+    # Payment actions (specific paths with payment_id)
     path('payments/<str:payment_id>/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('payments/<str:payment_id>/resend-tickets/', ResendTicketsView.as_view(), name='resend-tickets'),
+    
+    # Payment Detail (must come last - catch-all for payment_id)
+    path('payments/<str:payment_id>/', PaymentDetailView.as_view(), name='payment-detail'),
 ]

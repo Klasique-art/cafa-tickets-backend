@@ -675,3 +675,178 @@ class DownloadTicketView(APIView):
         response = HttpResponse(buffer, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="ticket-{ticket.ticket_id}.pdf"'
         return response
+
+class OrganizerRevenueView(APIView):
+    """
+    GET /api/v1/organizers/revenue/
+    Comprehensive revenue dashboard for event organizers
+    Query params:
+    - period: all_time (default), this_month, last_month, this_year
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+        
+        # Get period filter
+        period = request.query_params.get('period', 'all_time')
+        
+        # Calculate date range based on period
+        if period == 'this_month':
+            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
+        elif period == 'last_month':
+            from datetime import timedelta
+            first_day_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_day_last_month = first_day_this_month - timedelta(days=1)
+            start_date = last_day_last_month.replace(day=1)
+            end_date = last_day_last_month.replace(hour=23, minute=59, second=59)
+        elif period == 'this_year':
+            start_date = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
+        else:  # all_time
+            start_date = None
+            end_date = None
+
+        # Base queryset for organizer's completed purchases
+        purchases_query = Purchase.objects.filter(
+            event__organizer=user,
+            status='completed'
+        )
+        
+        if start_date:
+            purchases_query = purchases_query.filter(created_at__gte=start_date)
+        if end_date:
+            purchases_query = purchases_query.filter(created_at__lte=end_date)
+
+        # Calculate summary
+        gross_revenue = purchases_query.aggregate(total=Sum('subtotal'))['total'] or 0
+        platform_fee_percentage = 5.0  # 5% platform fee
+        platform_fees = gross_revenue * (platform_fee_percentage / 100)
+        net_revenue = gross_revenue - platform_fees
+        
+        total_tickets_sold = Ticket.objects.filter(
+            purchase__in=purchases_query,
+            status='paid'
+        ).count()
+        
+        total_events = Event.objects.filter(
+            organizer=user,
+            is_published=True
+        ).count()
+        
+        average_ticket_price = round(gross_revenue / total_tickets_sold, 2) if total_tickets_sold > 0 else 0
+
+        # Payout status (mocked for now - integrate with payment provider later)
+        # In production, this would come from Paystack/Stripe payout data
+        total_paid_out = net_revenue * 0.6  # Mock: 60% already paid out
+        pending_balance = net_revenue * 0.2  # Mock: 20% pending
+        available_balance = net_revenue * 0.2  # Mock: 20% available
+        
+        # Calculate next payout date (mock: 15th of next month)
+        from datetime import timedelta
+        if now.day < 15:
+            next_payout_date = now.replace(day=15).date()
+        else:
+            next_month = now.replace(day=1) + timedelta(days=32)
+            next_payout_date = next_month.replace(day=15).date()
+
+        # Revenue by event
+        revenue_by_event = []
+        event_revenue = purchases_query.values(
+            'event__id',
+            'event__title'
+        ).annotate(
+            gross_revenue=Sum('subtotal'),
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid'))
+        ).order_by('-gross_revenue')[:10]  # Top 10 events
+
+        for event_data in event_revenue:
+            event_gross = event_data['gross_revenue'] or 0
+            event_platform_fee = event_gross * (platform_fee_percentage / 100)
+            event_net = event_gross - event_platform_fee
+            
+            revenue_by_event.append({
+                'event_id': event_data['event__id'],
+                'event_title': event_data['event__title'],
+                'gross_revenue': str(event_gross),
+                'net_revenue': str(event_net),
+                'platform_fee': str(event_platform_fee),
+                'tickets_sold': event_data['tickets_sold']
+            })
+
+        # Revenue by month (last 12 months)
+        from django.db.models.functions import TruncMonth
+        from datetime import timedelta
+        
+        twelve_months_ago = now - timedelta(days=365)
+        revenue_by_month = []
+        
+        monthly_revenue = Purchase.objects.filter(
+            event__organizer=user,
+            status='completed',
+            created_at__gte=twelve_months_ago
+        ).annotate(
+            month=TruncMonth('created_at')
+        ).values('month').annotate(
+            gross_revenue=Sum('subtotal'),
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid'))
+        ).order_by('-month')
+
+        for month_data in monthly_revenue:
+            month_gross = month_data['gross_revenue'] or 0
+            month_platform_fee = month_gross * (platform_fee_percentage / 100)
+            month_net = month_gross - month_platform_fee
+            
+            revenue_by_month.append({
+                'month': month_data['month'].strftime('%Y-%m'),
+                'gross_revenue': str(month_gross),
+                'net_revenue': str(month_net),
+                'platform_fee': str(month_platform_fee),
+                'tickets_sold': month_data['tickets_sold']
+            })
+
+        # Recent transactions (last 20)
+        recent_purchases = purchases_query.select_related(
+            'event',
+            'user'
+        ).prefetch_related('tickets__ticket_type').order_by('-created_at')[:20]
+
+        recent_transactions = []
+        for purchase in recent_purchases:
+            first_ticket = purchase.tickets.first()
+            if first_ticket:
+                ticket_price = purchase.subtotal
+                transaction_platform_fee = ticket_price * (platform_fee_percentage / 100)
+                transaction_net = ticket_price - transaction_platform_fee
+                
+                recent_transactions.append({
+                    'date': purchase.created_at.isoformat(),
+                    'event_title': purchase.event.title,
+                    'ticket_type': first_ticket.ticket_type.name if first_ticket.ticket_type else 'N/A',
+                    'amount': str(ticket_price),
+                    'platform_fee': str(transaction_platform_fee),
+                    'net_amount': str(transaction_net)
+                })
+
+        return Response({
+            'period': period,
+            'summary': {
+                'gross_revenue': str(gross_revenue),
+                'platform_fees': str(platform_fees),
+                'net_revenue': str(net_revenue),
+                'total_tickets_sold': total_tickets_sold,
+                'total_events': total_events,
+                'average_ticket_price': str(average_ticket_price)
+            },
+            'payout_status': {
+                'available_balance': str(available_balance),
+                'pending_balance': str(pending_balance),
+                'total_paid_out': str(total_paid_out),
+                'next_payout_date': next_payout_date.isoformat()
+            },
+            'revenue_by_event': revenue_by_event,
+            'revenue_by_month': revenue_by_month,
+            'recent_transactions': recent_transactions
+        })
