@@ -194,6 +194,8 @@ class EventListSerializer(serializers.ModelSerializer):
             'status',
             'is_recurring',
             'created_at',
+            'is_published',
+            'updated_at', 
         ]
 
 

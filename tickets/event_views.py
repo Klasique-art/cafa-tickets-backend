@@ -300,6 +300,7 @@ class MyEventsView(generics.ListAPIView):
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
+        from django.db.models import Count, Sum, Q
         queryset = Event.objects.filter(organizer=self.request.user)
 
         # Filter by status
@@ -321,37 +322,178 @@ class MyEventsView(generics.ListAPIView):
         # Search
         search = self.request.query_params.get('search')
         if search:
-            queryset = queryset.filter(Q(title__icontains=search))
+            queryset = queryset.filter(
+                Q(title__icontains=search) |           # OR title contains search
+                Q(venue_name__icontains=search) |      # OR venue name contains search
+                Q(venue_city__icontains=search)        # OR venue city contains search
+            )
+        
+        # Filter by category slug
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category__slug=category)
 
-        return queryset.order_by('-created_at')
+        # Sorting with annotations
+        sort_by = self.request.query_params.get('sort_by', '-start_date')
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
+        # For tickets_sold and revenue, we need to add calculated fields
+        if sort_by in ['-tickets_sold', 'tickets_sold', '-revenue', 'revenue']:
+            queryset = queryset.annotate(
+                # Count tickets where status is 'paid'
+                calculated_tickets_sold=Count('tickets', filter=Q(tickets__status='paid')),
+                # Sum revenue from completed purchases
+                calculated_revenue=Sum('purchases__subtotal', filter=Q(purchases__status='completed'))
+            )
 
-        # Calculate summary
-        summary = {
-            'total_events': queryset.count(),
-            'upcoming_events': queryset.filter(start_date__gt=timezone.now().date()).count(),
-            'ongoing_events': queryset.filter(
-                start_date__lte=timezone.now().date(),
-                end_date__gte=timezone.now().date()
-            ).count(),
-            'past_events': queryset.filter(end_date__lt=timezone.now().date()).count(),
+        # Map frontend sort_by to Django ordering
+        sort_map = {
+            '-start_date': '-start_date',
+            'start_date': 'start_date',
+            '-created_at': '-created_at',
+            'created_at': 'created_at',
+            '-tickets_sold': '-calculated_tickets_sold',
+            'tickets_sold': 'calculated_tickets_sold',
+            '-revenue': '-calculated_revenue',
+            'revenue': 'calculated_revenue',
         }
 
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            result = self.get_paginated_response(serializer.data)
-            result.data['summary'] = summary
-            return result
+        # Apply sorting
+        ordering = sort_map.get(sort_by, '-start_date')  # Default to -start_date
+        return queryset.order_by(ordering)
 
-        serializer = self.get_serializer(queryset, many=True)
+    def list(self, request, *args, **kwargs):
+        from django.db.models import Sum, Count, Q
+        from .models import Purchase
+        
+        queryset = self.get_queryset()
+        now = timezone.now()
+
+        # Calculate summary with revenue and tickets sold
+        total_revenue = Purchase.objects.filter(
+            event__organizer=request.user,
+            status='completed'
+        ).aggregate(total=Sum('subtotal'))['total'] or 0
+
+        total_tickets_sold = queryset.aggregate(
+            total=Count('tickets', filter=Q(tickets__status='paid'))
+        )['total'] or 0
+
+        summary = {
+            'total_events': queryset.count(),
+            'upcoming_events': queryset.filter(start_date__gt=now.date()).count(),
+            'ongoing_events': queryset.filter(
+                start_date__lte=now.date(),
+                end_date__gte=now.date()
+            ).count(),
+            'past_events': queryset.filter(end_date__lt=now.date()).count(),
+            'total_revenue': str(total_revenue),
+            'total_tickets_sold': total_tickets_sold
+        }
+
+        # Paginate
+        page = self.paginate_queryset(queryset)
+        events_to_process = page if page is not None else queryset
+
+        # Build results with analytics and ticket types
+        results = []
+        for event in events_to_process:
+            # Use serializer for basic event data
+            event_data = EventListSerializer(event, context={'request': request}).data
+            
+            # Add analytics
+            tickets_sold = event.tickets.filter(status='paid').count()
+            tickets_checked_in = event.tickets.filter(is_checked_in=True).count()
+            total_tickets = event.max_attendees
+            
+            event_purchases = Purchase.objects.filter(event=event, status='completed')
+            gross_revenue = event_purchases.aggregate(total=Sum('subtotal'))['total'] or 0
+            platform_fee = event_purchases.aggregate(total=Sum('service_fee'))['total'] or 0
+            net_revenue = gross_revenue
+            
+            last_sale = event_purchases.order_by('-created_at').first()
+            
+            event_data['analytics'] = {
+                'total_tickets': total_tickets,
+                'tickets_sold': tickets_sold,
+                'tickets_remaining': total_tickets - tickets_sold,
+                'tickets_checked_in': tickets_checked_in,
+                'sales_percentage': round((tickets_sold / total_tickets * 100) if total_tickets > 0 else 0, 2),
+                'gross_revenue': str(gross_revenue),
+                'net_revenue': str(net_revenue),
+                'platform_fee': str(platform_fee),
+                'page_views': event.views_count,
+                'unique_visitors': event.views_count,
+                'conversion_rate': round((tickets_sold / event.views_count * 100) if event.views_count > 0 else 0, 2),
+                'last_sale_date': last_sale.created_at if last_sale else None,
+            }
+            
+            # Add ticket types
+            ticket_types_data = []
+            for tt in event.ticket_types.all():
+                tickets_sold_for_type = tt.tickets_sold
+                revenue = tickets_sold_for_type * tt.price
+                sales_percentage = round((tickets_sold_for_type / tt.quantity * 100) if tt.quantity > 0 else 0, 2)
+                
+                status_value = 'active'
+                if tt.available_until and now > tt.available_until:
+                    status_value = 'expired'
+                elif tt.tickets_remaining <= 0:
+                    status_value = 'sold_out'
+                elif not tt.is_available:
+                    status_value = 'inactive'
+                
+                ticket_type_obj = {
+                    'id': tt.id,
+                    'name': tt.name,
+                    'price': str(tt.price),
+                    'quantity': tt.quantity,
+                    'tickets_sold': tickets_sold_for_type,
+                    'tickets_remaining': tt.tickets_remaining,
+                    'revenue': str(revenue),
+                    'sales_percentage': sales_percentage,
+                }
+                
+                if tt.available_from:
+                    ticket_type_obj['available_from'] = tt.available_from
+                if tt.available_until:
+                    ticket_type_obj['available_until'] = tt.available_until
+                if status_value != 'active':
+                    ticket_type_obj['status'] = status_value
+                
+                ticket_types_data.append(ticket_type_obj)
+            
+            event_data['ticket_types'] = ticket_types_data
+            results.append(event_data)
+
+        # Return response
+        if page is not None:
+            return Response({
+                'count': self.paginator.page.paginator.count,
+                'next': self.get_next_link(),
+                'previous': self.get_previous_link(),
+                'summary': summary,
+                'results': results
+            })
+
         return Response({
-            'count': queryset.count(),
+            'count': len(results),
+            'next': None,
+            'previous': None,
             'summary': summary,
-            'results': serializer.data
+            'results': results
         })
+
+    def get_next_link(self):
+        if not self.paginator.page.has_next():
+            return None
+        page_number = self.paginator.page.next_page_number()
+        return self.request.build_absolute_uri(f'?page={page_number}')
+
+    def get_previous_link(self):
+        if not self.paginator.page.has_previous():
+            return None
+        page_number = self.paginator.page.previous_page_number()
+        return self.request.build_absolute_uri(f'?page={page_number}')
 
 
 class CreateTicketTypeView(generics.CreateAPIView):
