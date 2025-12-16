@@ -265,14 +265,14 @@ class UserDashboardStatsView(APIView):
         # Best selling event
         best_selling_event = None
         best_event_data = events_created.annotate(
-            tickets_sold=Count('tickets', filter=Q(tickets__status='paid'))
-        ).order_by('-tickets_sold').first()
+            sold_count=Count('tickets', filter=Q(tickets__status='paid'))
+        ).order_by('-sold_count').first()
 
         if best_event_data:
             best_selling_event = {
                 'id': best_event_data.id,
                 'title': best_event_data.title,
-                'tickets_sold': best_event_data.tickets_sold
+                'tickets_sold': best_event_data.sold_count
             }
 
         # Revenue by month (last 6 months)
@@ -403,12 +403,23 @@ class UserDashboardStatsView(APIView):
 
 class EventAnalyticsView(APIView):
     """
-    GET /api/v1/events/{id}/analytics/
+    GET /api/v1/events/{slug_or_id}/analytics/
+    Get comprehensive analytics for an event (supports both slug and ID)
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, id):
-        event = get_object_or_404(Event, id=id, organizer=request.user)
+    def get(self, request, slug_or_id):
+        # Try to get event by slug first, then by ID
+        try:
+            event = Event.objects.get(slug=slug_or_id, organizer=request.user)
+        except Event.DoesNotExist:
+            try:
+                event = Event.objects.get(id=slug_or_id, organizer=request.user)
+            except (Event.DoesNotExist, ValueError):
+                return Response({
+                    'error': 'Event not found',
+                    'message': "This event does not exist or you don't have permission to view it."
+                }, status=status.HTTP_404_NOT_FOUND)
 
         # Calculate metrics
         total_tickets = event.max_attendees
@@ -427,6 +438,113 @@ class EventAnalyticsView(APIView):
 
         net_revenue = gross_revenue
 
+        # Calculate average ticket price
+        average_ticket_price = round(gross_revenue / tickets_sold, 2) if tickets_sold > 0 else 0
+
+        # Calculate projected revenue (if all tickets sell)
+        total_possible_revenue = 0
+        for ticket_type in event.ticket_types.all():
+            total_possible_revenue += ticket_type.price * ticket_type.quantity
+        projected_revenue = total_possible_revenue
+
+        # Sales by ticket type
+        sales_by_ticket_type = []
+        for ticket_type in event.ticket_types.all():
+            sold_count = ticket_type.tickets.filter(status='paid').count()
+            revenue = sold_count * ticket_type.price
+            
+            percentage_of_total_sales = round((sold_count / tickets_sold * 100) if tickets_sold > 0 else 0, 2)
+            percentage_of_quantity_sold = round((sold_count / ticket_type.quantity * 100) if ticket_type.quantity > 0 else 0, 2)
+            
+            sales_by_ticket_type.append({
+                'ticket_type_id': ticket_type.id,
+                'ticket_type': ticket_type.name,
+                'price': str(ticket_type.price),
+                'tickets_sold': sold_count,
+                'total_quantity': ticket_type.quantity,
+                'revenue': str(revenue),
+                'percentage_of_total_sales': percentage_of_total_sales,
+                'percentage_of_quantity_sold': percentage_of_quantity_sold
+            })
+
+        # Sales timeline (daily sales)
+        from django.db.models.functions import TruncDate
+        
+        daily_sales = Purchase.objects.filter(
+            event=event,
+            status='completed'
+        ).annotate(
+            date=TruncDate('created_at')
+        ).values('date').annotate(
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid')),
+            revenue=Sum('subtotal')
+        ).order_by('date')
+
+        sales_timeline = []
+        cumulative_tickets = 0
+        cumulative_revenue = 0
+        
+        for day in daily_sales:
+            cumulative_tickets += day['tickets_sold']
+            cumulative_revenue += day['revenue'] or 0
+            
+            sales_timeline.append({
+                'date': day['date'].strftime('%Y-%m-%d'),
+                'tickets_sold': day['tickets_sold'],
+                'revenue': str(day['revenue'] or 0),
+                'cumulative_tickets': cumulative_tickets,
+                'cumulative_revenue': str(cumulative_revenue)
+            })
+
+        # Sales by hour
+        from django.db.models.functions import ExtractHour
+        
+        hourly_sales = Purchase.objects.filter(
+            event=event,
+            status='completed'
+        ).annotate(
+            hour=ExtractHour('created_at')
+        ).values('hour').annotate(
+            tickets_sold=Count('tickets', filter=Q(tickets__status='paid')),
+            revenue=Sum('subtotal')
+        ).order_by('hour')
+
+        sales_by_hour = []
+        for hour_data in hourly_sales:
+            sales_by_hour.append({
+                'hour': f"{hour_data['hour']:02d}:00",
+                'tickets_sold': hour_data['tickets_sold'],
+                'revenue': str(hour_data['revenue'] or 0)
+            })
+
+        # Traffic stats (placeholder - would need analytics integration)
+        # For now, returning calculated values based on sales conversion
+        # In production, this would come from Google Analytics, Mixpanel, etc.
+        traffic = {
+            'page_views': 0,  # Would come from analytics service
+            'unique_visitors': 0,  # Would come from analytics service
+            'conversion_rate': round((tickets_sold / 1) * 100, 2) if tickets_sold > 0 else 0.0  # Placeholder calculation
+        }
+
+        # Recent sales (last 10)
+        recent_purchases = Purchase.objects.filter(
+            event=event,
+            status='completed'
+        ).select_related('user').prefetch_related('tickets').order_by('-created_at')[:10]
+
+        recent_sales = []
+        for purchase in recent_purchases:
+            # Get first ticket from this purchase
+            first_ticket = purchase.tickets.first()
+            if first_ticket:
+                recent_sales.append({
+                    'ticket_id': first_ticket.ticket_id,
+                    'ticket_type': first_ticket.ticket_type.name if first_ticket.ticket_type else 'N/A',
+                    'amount': str(purchase.subtotal),
+                    'buyer_name': purchase.user.full_name or purchase.user.username,
+                    'purchase_date': purchase.created_at.isoformat()
+                })
+
         return Response({
             'event_id': event.id,
             'event_title': event.title,
@@ -442,9 +560,15 @@ class EventAnalyticsView(APIView):
                 'net_revenue': str(net_revenue),
                 'platform_fee': str(platform_fee),
                 'platform_fee_percentage': 5.0,
-            }
+                'average_ticket_price': str(average_ticket_price),
+                'projected_revenue': str(projected_revenue)
+            },
+            'sales_by_ticket_type': sales_by_ticket_type,
+            'sales_timeline': sales_timeline,
+            'sales_by_hour': sales_by_hour,
+            'traffic': traffic,
+            'recent_sales': recent_sales
         })
-
 
 class AttendedEventsView(generics.ListAPIView):
     """

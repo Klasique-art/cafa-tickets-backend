@@ -54,13 +54,14 @@ urlpatterns = [
     path('events/create/', EventCreateView.as_view(), name='event-create'),
     path('events/my-events/', MyEventsView.as_view(), name='my-events'),
     path('events/my-events/<str:slug_or_id>/', MyEventDetailView.as_view(), name='my-event-detail'),
+    path('events/my-events/<str:slug_or_id>/analytics/', EventAnalyticsView.as_view(), name='my-event-analytics'),
 
     # Event Detail (must come after specific paths to avoid slug conflicts)
     path('events/<slug:slug>/', EventDetailView.as_view(), name='event-detail'),
     path('events/<int:pk>/update/', EventUpdateView.as_view(), name='event-update'),
 
-    # Event Analytics & Attendees (Organizer)
-    path('events/<int:id>/analytics/', EventAnalyticsView.as_view(), name='event-analytics'),
+    # Event Analytics & Attendees (Organizer) - Changed to support slug or ID
+    path('events/<str:slug_or_id>/analytics/', EventAnalyticsView.as_view(), name='event-analytics'),
     path('events/<int:id>/attendees/', EventAttendeesView.as_view(), name='event-attendees'),
     path('events/<int:id>/checkin/', CheckInTicketView.as_view(), name='event-checkin'),
 
