@@ -15,6 +15,9 @@ from .event_views import (
     MyEventsView,
     MyEventDetailView,
     CreateTicketTypeView,
+    UpdateTicketTypeView,
+    DeleteTicketTypeView,
+    DeleteEventView,
 )
 
 # Purchase Views
@@ -55,13 +58,14 @@ urlpatterns = [
 
     # Event Creation & Management (must come before <slug> to avoid conflicts)
     path('events/create/', EventCreateView.as_view(), name='event-create'),
+    path('events/<str:slug_or_id>/delete/', DeleteEventView.as_view(), name='delete-event'),
     path('events/my-events/', MyEventsView.as_view(), name='my-events'),
     path('events/my-events/<str:slug_or_id>/', MyEventDetailView.as_view(), name='my-event-detail'),
     path('events/my-events/<str:slug_or_id>/analytics/', EventAnalyticsView.as_view(), name='my-event-analytics'),
 
     # Event Detail (must come after specific paths to avoid slug conflicts)
     path('events/<slug:slug>/', EventDetailView.as_view(), name='event-detail'),
-    path('events/<int:pk>/update/', EventUpdateView.as_view(), name='event-update'),
+    path('events/<str:slug_or_id>/update/', EventUpdateView.as_view(), name='event-update'),
 
     # Event Analytics & Attendees (Organizer) - Changed to support slug or ID
     path('events/<str:slug_or_id>/analytics/', EventAnalyticsView.as_view(), name='event-analytics'),
@@ -70,6 +74,8 @@ urlpatterns = [
 
     # Ticket Types
     path('events/<str:slug_or_id>/tickets/', CreateTicketTypeView.as_view(), name='create-ticket-type'),
+    path('events/<str:slug_or_id>/tickets/<int:ticket_id>/', UpdateTicketTypeView.as_view(), name='update-ticket-type'),
+    path('events/<str:slug_or_id>/tickets/<int:ticket_id>/delete/', DeleteTicketTypeView.as_view(), name='delete-ticket-type'),
 
     # ============================================================================
     # TICKET PURCHASE

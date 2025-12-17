@@ -267,13 +267,33 @@ class EventCreateView(generics.CreateAPIView):
 
 class EventUpdateView(generics.UpdateAPIView):
     """
-    PATCH /api/v1/events/{id}/
+    PATCH /api/v1/events/{slug_or_id}/update/
     """
     serializer_class = EventCreateUpdateSerializer
     permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'slug_or_id'
 
     def get_queryset(self):
         return Event.objects.filter(organizer=self.request.user)
+    
+    def get_object(self):
+        """Support both ID and slug lookup"""
+        slug_or_id = self.kwargs.get('slug_or_id')
+        queryset = self.get_queryset()
+        
+        # Try ID first if it's a digit
+        if slug_or_id.isdigit():
+            try:
+                return queryset.get(id=int(slug_or_id))
+            except Event.DoesNotExist:
+                pass
+        
+        # Try slug
+        try:
+            return queryset.get(slug=slug_or_id)
+        except Event.DoesNotExist:
+            from django.http import Http404
+            raise Http404("Event not found")
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -673,3 +693,154 @@ class MyEventDetailView(generics.RetrieveAPIView):
         }
 
         return Response(response_data)
+
+class UpdateTicketTypeView(generics.UpdateAPIView):
+    """
+    PATCH /api/v1/events/{slug_or_id}/tickets/{ticket_id}/
+    """
+    serializer_class = TicketTypeCreateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'ticket_id'
+
+    def get_queryset(self):
+        # Only allow updating tickets for events owned by the user
+        slug_or_id = self.kwargs.get('slug_or_id')
+        
+        if slug_or_id.isdigit():
+            event = get_object_or_404(Event, id=int(slug_or_id), organizer=self.request.user)
+        else:
+            event = get_object_or_404(Event, slug=slug_or_id, organizer=self.request.user)
+        
+        return TicketType.objects.filter(event=event)
+    
+    def get_object(self):
+        """Get ticket by ID"""
+        ticket_id = self.kwargs.get('ticket_id')
+        queryset = self.get_queryset()
+        return get_object_or_404(queryset, id=ticket_id)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        
+        # Don't allow reducing quantity below tickets sold
+        if 'quantity' in request.data:
+            new_quantity = int(request.data['quantity'])
+            if new_quantity < instance.tickets_sold:
+                return Response({
+                    'error': 'Invalid quantity',
+                    'message': f'Cannot reduce quantity to {new_quantity}. {instance.tickets_sold} tickets already sold.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        ticket_type = serializer.save()
+
+        return Response({
+            'message': 'Ticket type updated successfully',
+            'ticket_type': TicketTypeCreateSerializer(ticket_type).data
+        }, status=status.HTTP_200_OK)
+
+class DeleteTicketTypeView(generics.DestroyAPIView):
+    """
+    DELETE /api/v1/events/{slug_or_id}/tickets/{ticket_id}/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'ticket_id'
+
+    def get_queryset(self):
+        # Only allow deleting tickets for events owned by the user
+        slug_or_id = self.kwargs.get('slug_or_id')
+        
+        if slug_or_id.isdigit():
+            event = get_object_or_404(Event, id=int(slug_or_id), organizer=self.request.user)
+        else:
+            event = get_object_or_404(Event, slug=slug_or_id, organizer=self.request.user)
+        
+        return TicketType.objects.filter(event=event)
+    
+    def get_object(self):
+        """Get ticket by ID"""
+        ticket_id = self.kwargs.get('ticket_id')
+        queryset = self.get_queryset()
+        return get_object_or_404(queryset, id=ticket_id)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        event = instance.event
+        
+        # Check if this is the last ticket type
+        total_ticket_types = event.ticket_types.count()
+        if total_ticket_types <= 1:
+            return Response({
+                'error': 'Cannot delete ticket type',
+                'message': 'Cannot delete the last ticket type. Event must have at least one ticket type.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Don't allow deleting if tickets have been sold
+        if instance.tickets_sold > 0:
+            return Response({
+                'error': 'Cannot delete ticket type',
+                'message': f'Cannot delete ticket type with sold tickets. {instance.tickets_sold} tickets have been sold.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Delete the ticket type
+        instance.delete()
+
+        return Response({
+            'message': 'Ticket type deleted successfully'
+        }, status=status.HTTP_200_OK)
+    
+class DeleteEventView(generics.DestroyAPIView):
+    """
+    DELETE /api/v1/events/{slug_or_id}/delete/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'slug_or_id'
+
+    def get_queryset(self):
+        return Event.objects.filter(organizer=self.request.user)
+    
+    def get_object(self):
+        """Support both ID and slug lookup"""
+        slug_or_id = self.kwargs.get('slug_or_id')
+        queryset = self.get_queryset()
+        
+        # Try ID first if it's a digit
+        if slug_or_id.isdigit():
+            try:
+                return queryset.get(id=int(slug_or_id))
+            except Event.DoesNotExist:
+                pass
+        
+        # Try slug
+        try:
+            return queryset.get(slug=slug_or_id)
+        except Event.DoesNotExist:
+            from django.http import Http404
+            raise Http404("Event not found")
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        
+        # Check if event has already started or ended
+        if instance.status in ['ongoing', 'past']:
+            return Response({
+                'error': 'Cannot delete event',
+                'message': 'Cannot delete event that has already started or ended. Please contact support.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if any tickets have been sold
+        total_sold = sum(ticket.tickets_sold for ticket in instance.ticket_types.all())
+        if total_sold > 0:
+            return Response({
+                'error': 'Cannot delete event',
+                'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). Please contact support for assistance.',
+                'support_email': 'support@cafatickets.com'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Delete the event
+        instance.delete()
+
+        return Response({
+            'message': 'Event deleted successfully'
+        }, status=status.HTTP_200_OK)

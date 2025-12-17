@@ -385,16 +385,19 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
         except json.JSONDecodeError:
             raise serializers.ValidationError("Invalid JSON format for ticket types")
         
-        if not ticket_types:
+        # ✅ Only require ticket_types during CREATE (not UPDATE)
+        if not ticket_types and not self.instance:
             raise serializers.ValidationError("At least one ticket type is required")
-        if len(ticket_types) > 10:
+        
+        if ticket_types and len(ticket_types) > 10:
             raise serializers.ValidationError("Maximum 10 ticket types allowed")
         
         # Validate each ticket type
-        for ticket_type in ticket_types:
-            ticket_serializer = TicketTypeCreateSerializer(data=ticket_type)
-            if not ticket_serializer.is_valid():
-                raise serializers.ValidationError(ticket_serializer.errors)
+        if ticket_types:
+            for ticket_type in ticket_types:
+                ticket_serializer = TicketTypeCreateSerializer(data=ticket_type)
+                if not ticket_serializer.is_valid():
+                    raise serializers.ValidationError(ticket_serializer.errors)
         
         return ticket_types
 
@@ -498,16 +501,7 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
 
         instance.save()
 
-        # Update ticket types if provided
-        if ticket_types_data is not None:
-            # Remove old ticket types
-            instance.ticket_types.all().delete()
-            # Create new ones
-            for ticket_type_data in ticket_types_data:
-                TicketType.objects.create(event=instance, **ticket_type_data)
-
         return instance
-
 
 # Add timezone field to EventDetailSerializer
 EventDetailSerializer._declared_fields['timezone'] = serializers.SerializerMethodField()
