@@ -309,15 +309,20 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
 class EventCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for creating and updating events"""
-    category_id = serializers.IntegerField(required=True)
+    category_slug = serializers.CharField(required=True)
     payment_profile_id = serializers.UUIDField(required=True)
-    ticket_types = TicketTypeCreateSerializer(many=True, required=True)
+    ticket_types = serializers.CharField(required=True)
+    additional_images = serializers.ListField(
+        child=serializers.ImageField(),
+        required=False,
+        allow_empty=True
+    )
 
     class Meta:
         model = Event
         fields = [
             'title',
-            'category_id',
+            'category_slug',
             'short_description',
             'description',
             'venue_name',
@@ -372,12 +377,26 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_ticket_types(self, value):
-        """Validate ticket types"""
-        if not value:
+        """Validate ticket types - parse JSON string"""
+        import json
+        try:
+            # Parse JSON string to list
+            ticket_types = json.loads(value) if isinstance(value, str) else value
+        except json.JSONDecodeError:
+            raise serializers.ValidationError("Invalid JSON format for ticket types")
+        
+        if not ticket_types:
             raise serializers.ValidationError("At least one ticket type is required")
-        if len(value) > 10:
+        if len(ticket_types) > 10:
             raise serializers.ValidationError("Maximum 10 ticket types allowed")
-        return value
+        
+        # Validate each ticket type
+        for ticket_type in ticket_types:
+            ticket_serializer = TicketTypeCreateSerializer(data=ticket_type)
+            if not ticket_serializer.is_valid():
+                raise serializers.ValidationError(ticket_serializer.errors)
+        
+        return ticket_types
 
     def validate(self, data):
         """Cross-field validation"""
@@ -413,11 +432,15 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """Create event with ticket types"""
         ticket_types_data = validated_data.pop('ticket_types')
-        category_id = validated_data.pop('category_id')
+        category_slug = validated_data.pop('category_slug')
         payment_profile_id = validated_data.pop('payment_profile_id')
+        
+        # ✅ Pop file fields
+        featured_image = validated_data.pop('featured_image', None)
+        additional_images_files = validated_data.pop('additional_images', [])
 
         # Get category and payment profile
-        category = EventCategory.objects.get(id=category_id)
+        category = EventCategory.objects.get(slug=category_slug)
         payment_profile = PaymentProfile.objects.get(id=payment_profile_id)
 
         # Create event
@@ -425,8 +448,24 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             category=category,
             payment_profile=payment_profile,
             organizer=self.context['request'].user,
+            featured_image=featured_image,  # ImageField handles this fine
             **validated_data
         )
+        
+        # ✅ Save additional images and store their URLs
+        additional_image_urls = []
+        if additional_images_files:
+            from django.core.files.storage import default_storage
+            for i, img_file in enumerate(additional_images_files):
+                # Save file and get URL
+                file_path = f'events/additional/{event.id}/{i}_{img_file.name}'
+                saved_path = default_storage.save(file_path, img_file)
+                file_url = default_storage.url(saved_path)
+                additional_image_urls.append(file_url)
+            
+            # Store URLs in JSONField
+            event.additional_images = additional_image_urls
+            event.save()
 
         # Create ticket types
         for ticket_type_data in ticket_types_data:
@@ -437,12 +476,17 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Update event"""
         ticket_types_data = validated_data.pop('ticket_types', None)
-        category_id = validated_data.pop('category_id', None)
+        category_slug = validated_data.pop('category_slug', None)
         payment_profile_id = validated_data.pop('payment_profile_id', None)
 
         # Update category if provided
-        if category_id:
-            instance.category = EventCategory.objects.get(id=category_id)
+        if category_slug:
+            try:
+                instance.category = EventCategory.objects.get(slug=category_slug)
+            except EventCategory.DoesNotExist:
+                raise serializers.ValidationError({
+                    'category_slug': f'Category with slug "{category_slug}" does not exist'
+                })
 
         # Update payment profile if provided
         if payment_profile_id:

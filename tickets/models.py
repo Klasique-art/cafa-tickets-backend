@@ -174,7 +174,7 @@ class Event(models.Model):
     )
 
     # Images
-    featured_image = models.ImageField(
+    featured_image = models.ImageField( 
         upload_to="events/featured/%Y/%m/",
         blank=True,
         null=True,

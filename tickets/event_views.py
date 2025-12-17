@@ -9,6 +9,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db.models import Q, Count
+from rest_framework import parsers
 
 from .models import Event, EventCategory, TicketType
 from .new_serializers import (
@@ -236,9 +237,18 @@ class EventCreateView(generics.CreateAPIView):
     """
     serializer_class = EventCreateUpdateSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser]
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        # ✅ Use dict() instead of .copy() to avoid deepcopy on file objects
+        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
+        
+        # ✅ Handle additional_images separately
+        additional_images = request.FILES.getlist('additional_images')
+        if additional_images:
+            data['additional_images'] = additional_images
+
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         event = serializer.save()
 
