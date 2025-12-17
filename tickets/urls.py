@@ -69,7 +69,7 @@ urlpatterns = [
     path('events/<int:id>/checkin/', CheckInTicketView.as_view(), name='event-checkin'),
 
     # Ticket Types
-    path('events/<int:event_id>/tickets/', CreateTicketTypeView.as_view(), name='create-ticket-type'),
+    path('events/<str:slug_or_id>/tickets/', CreateTicketTypeView.as_view(), name='create-ticket-type'),
 
     # ============================================================================
     # TICKET PURCHASE

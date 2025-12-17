@@ -513,12 +513,30 @@ class CreateTicketTypeView(generics.CreateAPIView):
     serializer_class = TicketTypeCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    def create(self, request, event_id):
-        # Get event
-        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+    def create(self, request, slug_or_id):
+        # Try to get event by slug first, then by ID
+        try:
+            if slug_or_id.isdigit():
+                event = get_object_or_404(Event, id=int(slug_or_id), organizer=request.user)
+            else:
+                event = get_object_or_404(Event, slug=slug_or_id, organizer=request.user)
+        except Event.DoesNotExist:
+            return Response({'error': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Add defaults from event if not provided
+        data = request.data.copy()
+        if 'available_from' not in data or not data['available_from']:
+            # ✅ Default to NOW (when ticket is created)
+            from django.utils import timezone
+            data['available_from'] = timezone.now().isoformat()
+        if 'available_until' not in data or not data['available_until']:
+            # ✅ Default to event end datetime
+            from datetime import datetime, time
+            end_datetime = datetime.combine(event.end_date, event.end_time or time(23, 59, 59))
+            data['available_until'] = end_datetime.isoformat()
 
         # Validate data
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
         # Check capacity
@@ -530,7 +548,7 @@ class CreateTicketTypeView(generics.CreateAPIView):
         if current_total + new_quantity > event.max_attendees:
             return Response({
                 'error': 'Capacity exceeded',
-                'message': f'Adding this ticket type would exceed event maximum attendees ({event.max_attendees}). Current total: {current_total}, Attempting to add: {new_quantity}'
+                'message': f'Cannot add {new_quantity:,} tickets. Event capacity is {event.max_attendees:,} attendees. You already have {current_total:,} tickets, leaving only {event.max_attendees - current_total:,} spots available.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # Create ticket type

@@ -135,8 +135,8 @@ class TicketTypeCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_quantity(self, value):
-        if value < 1 or value > 10000:
-            raise serializers.ValidationError("Quantity must be between 1 and 10,000")
+        if value < 1 or value > 1000000:
+            raise serializers.ValidationError("Quantity must be between 1 and 1,000,000")
         return value
 
     def validate(self, data):

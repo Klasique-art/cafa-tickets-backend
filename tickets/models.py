@@ -351,7 +351,7 @@ class TicketType(models.Model):
         help_text="Ticket price (minimum 10.00 GHS)"
     )
     quantity = models.PositiveIntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(10000)],
+        validators=[MinValueValidator(1), MaxValueValidator(1000000)],
         help_text="Total number of tickets available"
     )
     tickets_sold = models.PositiveIntegerField(
