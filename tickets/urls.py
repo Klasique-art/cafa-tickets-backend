@@ -36,6 +36,7 @@ from .ticket_dashboard_views import (
     MyTicketsView,
     TicketDetailView,
     CheckInTicketView,
+    CheckInHistoryView,
     EventAttendeesView,
     UserDashboardStatsView,
     EventAnalyticsView,
@@ -69,8 +70,9 @@ urlpatterns = [
 
     # Event Analytics & Attendees (Organizer) - Changed to support slug or ID
     path('events/<str:slug_or_id>/analytics/', EventAnalyticsView.as_view(), name='event-analytics'),
-    path('events/<int:id>/attendees/', EventAttendeesView.as_view(), name='event-attendees'),
-    path('events/<int:id>/checkin/', CheckInTicketView.as_view(), name='event-checkin'),
+    path('events/<str:slug_or_id>/attendees/', EventAttendeesView.as_view(), name='event-attendees'),
+    path('events/<str:slug_or_id>/checkin/', CheckInTicketView.as_view(), name='event-checkin'),
+    path('events/<str:slug_or_id>/checkin-history/', CheckInHistoryView.as_view(), name='checkin-history'),
 
     # Ticket Types
     path('events/<str:slug_or_id>/tickets/', CreateTicketTypeView.as_view(), name='create-ticket-type'),

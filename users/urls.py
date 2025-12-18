@@ -4,6 +4,8 @@ from .views import (
     UserSettingsView,
     DeleteAccountView,
     LoginView,
+    ChangePasswordView,
+    ChangeUsernameView
 )
 from .payment_views import (
     PaymentProfileListCreateView,
@@ -31,4 +33,6 @@ urlpatterns = [
     path('payment-profile/<uuid:pk>/set-default/', SetDefaultPaymentProfileView.as_view(), name='payment-profile-set-default'),
     path('payment-profile/<uuid:pk>/verification-status/', VerificationStatusView.as_view(), name='payment-profile-verification-status'),
     path('payment-profile/<uuid:pk>/retry-verification/', RetryVerificationView.as_view(), name='payment-profile-retry-verification'),
+    path('change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('change-username/', ChangeUsernameView.as_view(), name='change-username'),
 ]

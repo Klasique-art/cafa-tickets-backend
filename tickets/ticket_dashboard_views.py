@@ -9,9 +9,10 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
 from django.http import HttpResponse
+from decimal import Decimal
 
 from .models import Ticket, Event, Purchase
-from .purchase_serializers import TicketSerializer, CheckInSerializer
+from .purchase_serializers import TicketSerializer, CheckInSerializer, TicketDetailSerializer
 
 
 class MyTicketsView(generics.ListAPIView):
@@ -23,7 +24,9 @@ class MyTicketsView(generics.ListAPIView):
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
-        queryset = Ticket.objects.filter(purchase__user=self.request.user)
+        queryset = Ticket.objects.filter(purchase__user=self.request.user).select_related(
+            'event', 'event__category', 'ticket_type', 'purchase'
+        )
 
         # Filter by status
         ticket_status = self.request.query_params.get('status', 'all')
@@ -38,19 +41,36 @@ class MyTicketsView(generics.ListAPIView):
                 Q(event__title__icontains=search)
             )
 
-        # Filter by category
-        category_id = self.request.query_params.get('category_id')
-        if category_id:
-            queryset = queryset.filter(event__category_id=category_id)
+        # Filter by category slug
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(event__category__slug=category)
 
         return queryset.order_by('-created_at')
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        # If pagination is disabled, still return paginated structure
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'count': len(serializer.data),
+            'next': None,
+            'previous': None,
+            'results': serializer.data
+        })
 
 
 class TicketDetailView(APIView):
     """
     GET /api/v1/tickets/{ticket_id}/
     """
-    permissions_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, ticket_id):
         ticket = get_object_or_404(
@@ -59,28 +79,42 @@ class TicketDetailView(APIView):
             purchase__user=request.user
         )
 
-        serializer = TicketSerializer(ticket, context={'request': request})
+        serializer = TicketDetailSerializer(ticket, context={'request': request})
         return Response(serializer.data)
 
 
 class CheckInTicketView(APIView):
     """
-    POST /api/v1/events/{id}/checkin/
+    POST /api/v1/events/{slug_or_id}/checkin/
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request, id):
-        event = get_object_or_404(Event, id=id, organizer=request.user)
+    def post(self, request, slug_or_id):
+        # Get event by slug or ID
+        if slug_or_id.isdigit():
+            event = get_object_or_404(Event, id=int(slug_or_id), organizer=request.user)
+        else:
+            event = get_object_or_404(Event, slug=slug_or_id, organizer=request.user)
 
         serializer = CheckInSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         ticket_id = serializer.validated_data['ticket_id']
-        ticket = get_object_or_404(Ticket, ticket_id=ticket_id)
+        
+        # ✅ Try to get ticket, return custom error if not found
+        try:
+            ticket = Ticket.objects.get(ticket_id=ticket_id)
+        except Ticket.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Invalid ticket',
+                'message': 'Ticket not found or not valid for this event'
+            }, status=status.HTTP_404_NOT_FOUND)
 
         # Validate ticket belongs to this event
         if ticket.event.id != event.id:
             return Response({
+                'success': False,
                 'error': 'Wrong event',
                 'message': f"This ticket is for '{ticket.event.title}', not '{event.title}'"
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -88,13 +122,14 @@ class CheckInTicketView(APIView):
         # Check if already checked in
         if ticket.is_checked_in and event.check_in_policy == 'single_entry':
             return Response({
+                'success': False,
                 'error': 'Already checked in',
                 'message': f'This ticket was already used at {ticket.checked_in_at}',
                 'ticket': {
                     'ticket_id': ticket.ticket_id,
                     'attendee_name': ticket.attendee_name,
                     'checked_in_at': ticket.checked_in_at,
-                    'checked_in_by': ticket.checked_in_by.username if ticket.checked_in_by else None
+                    'checked_in_by': ticket.checked_in_by.full_name if ticket.checked_in_by and hasattr(ticket.checked_in_by, 'full_name') else (ticket.checked_in_by.username if ticket.checked_in_by else None)
                 }
             }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -110,6 +145,7 @@ class CheckInTicketView(APIView):
         total_attendees = event.tickets.filter(status='paid').count()
 
         return Response({
+            'success': True,
             'message': 'Ticket checked in successfully',
             'ticket': {
                 'ticket_id': ticket.ticket_id,
@@ -125,49 +161,125 @@ class CheckInTicketView(APIView):
                 'checked_in_by': {
                     'id': request.user.id,
                     'username': request.user.username,
-                    'full_name': request.user.full_name
+                    'full_name': request.user.full_name if hasattr(request.user, 'full_name') else request.user.username
                 }
             },
             'event_stats': {
                 'total_checked_in': total_checked_in,
                 'total_attendees': total_attendees,
-                'check_in_percentage': round((total_checked_in / total_attendees * 100) if total_attendees > 0 else 0, 2)
+                'check_in_percentage': str(round((total_checked_in / total_attendees * 100) if total_attendees > 0 else 0, 2))
             }
         })
+    
+class CheckInHistoryView(APIView):
+    """
+    GET /api/v1/events/{slug_or_id}/checkin-history/
+    Returns last 10 most recent check-ins for quick reference
+    """
+    permission_classes = [permissions.IsAuthenticated]
 
+    def get(self, request, slug_or_id):
+        # Get event by slug or ID
+        if slug_or_id.isdigit():
+            event = get_object_or_404(Event, id=int(slug_or_id), organizer=request.user)
+        else:
+            event = get_object_or_404(Event, slug=slug_or_id, organizer=request.user)
+
+        # Get last 10 checked-in tickets
+        recent_checkins = Ticket.objects.filter(
+            event=event,
+            is_checked_in=True
+        ).select_related('ticket_type', 'checked_in_by').order_by('-checked_in_at')[:10]
+
+        # Build response
+        results = []
+        for ticket in recent_checkins:
+            results.append({
+                'ticket_id': ticket.ticket_id,
+                'attendee_name': ticket.attendee_name,
+                'attendee_email': ticket.attendee_email,
+                'ticket_type': {
+                    'id': ticket.ticket_type.id,
+                    'name': ticket.ticket_type.name,
+                    'price': str(ticket.ticket_type.price)
+                },
+                'checked_in_at': ticket.checked_in_at,
+                'checked_in_by': {
+                    'id': ticket.checked_in_by.id,
+                    'username': ticket.checked_in_by.username,
+                    'full_name': ticket.checked_in_by.full_name if hasattr(ticket.checked_in_by, 'full_name') else ticket.checked_in_by.username
+                } if ticket.checked_in_by else None
+            })
+
+        return Response(results, status=status.HTTP_200_OK)
+    
 
 class EventAttendeesView(generics.ListAPIView):
     """
-    GET /api/v1/events/{id}/attendees/
+    GET /api/v1/events/{slug_or_id}/attendees/
     """
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = PageNumberPagination
 
-    def get(self, request, id):
-        event = get_object_or_404(Event, id=id, organizer=request.user)
+    def get(self, request, slug_or_id):
+        # Get event by slug or ID
+        if slug_or_id.isdigit():
+            event = get_object_or_404(Event, id=int(slug_or_id), organizer=request.user)
+        else:
+            event = get_object_or_404(Event, slug=slug_or_id, organizer=request.user)
 
-        queryset = Ticket.objects.filter(event=event, status='paid')
+        queryset = Ticket.objects.filter(event=event).select_related(
+            'ticket_type', 'purchase', 'checked_in_by'
+        )
 
-        # Filters
+        # Filter by payment status
+        payment_status = request.query_params.get('payment_status', 'all')
+        if payment_status != 'all':
+            queryset = queryset.filter(status=payment_status)
+        else:
+            # Default: show paid tickets only
+            queryset = queryset.filter(status='paid')
+
+        # Search (now includes phone)
         search = request.query_params.get('search')
         if search:
             queryset = queryset.filter(
                 Q(attendee_name__icontains=search) |
                 Q(attendee_email__icontains=search) |
+                Q(attendee_phone__icontains=search) |
                 Q(ticket_id__icontains=search)
             )
 
+        # Filter by ticket type
         ticket_type_id = request.query_params.get('ticket_type_id')
         if ticket_type_id:
             queryset = queryset.filter(ticket_type_id=ticket_type_id)
 
+        # Filter by check-in status
         check_in_status = request.query_params.get('check_in_status', 'all')
         if check_in_status == 'checked_in':
             queryset = queryset.filter(is_checked_in=True)
         elif check_in_status == 'not_checked_in':
             queryset = queryset.filter(is_checked_in=False)
 
-        # Summary
+        # Sort by
+        sort_by = request.query_params.get('sort_by', '-purchase_date')
+        
+        sort_mapping = {
+            'purchase_date': 'purchase__created_at',
+            '-purchase_date': '-purchase__created_at',
+            'attendee_name': 'attendee_name',
+            '-attendee_name': '-attendee_name',
+            'ticket_type': 'ticket_type__name',
+            '-ticket_type': '-ticket_type__name',
+            'check_in_time': 'checked_in_at',
+            '-check_in_time': '-checked_in_at',
+        }
+        
+        order_by = sort_mapping.get(sort_by, '-purchase__created_at')
+        queryset = queryset.order_by(order_by)
+
+        # Summary (before pagination)
         summary = {
             'total_attendees': queryset.count(),
             'checked_in': queryset.filter(is_checked_in=True).count(),
@@ -178,36 +290,72 @@ class EventAttendeesView(generics.ListAPIView):
                 (summary['checked_in'] / summary['total_attendees'] * 100), 2
             )
         else:
-            summary['check_in_percentage'] = 0
+            summary['check_in_percentage'] = 0.0
 
         # Paginate
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(queryset, request)
 
-        results = [{
-            'ticket_id': ticket.ticket_id,
-            'attendee_name': ticket.attendee_name,
-            'attendee_email': ticket.attendee_email,
-            'attendee_phone': ticket.attendee_phone,
-            'ticket_type': {
-                'id': ticket.ticket_type.id,
-                'name': ticket.ticket_type.name,
-                'price': str(ticket.ticket_type.price)
-            },
-            'purchase_date': ticket.purchase.created_at,
-            'payment_status': 'paid',
-            'payment_reference': ticket.purchase.payment.reference if hasattr(ticket.purchase, 'payment') else None,
-            'amount_paid': str(ticket.ticket_type.price),
-            'is_checked_in': ticket.is_checked_in,
-            'checked_in_at': ticket.checked_in_at,
-            'checked_in_by': ticket.checked_in_by.username if ticket.checked_in_by else None
-        } for ticket in page]
+        # ✅ Handle case when page is None
+        if page is not None:
+            tickets = page
+        else:
+            tickets = queryset
 
-        response = paginator.get_paginated_response(results)
-        response.data['summary'] = summary
-        return response
+        results = []
+        for ticket in tickets:
+            # Get payment reference
+            payment_reference = None
+            if ticket.purchase:
+                if hasattr(ticket.purchase, 'payments') and ticket.purchase.payments.exists():
+                    payment = ticket.purchase.payments.first()
+                    payment_reference = payment.payment_reference if hasattr(payment, 'payment_reference') else payment.payment_id
+                else:
+                    payment_reference = ticket.purchase.purchase_id
 
+            # Build checked_in_by object
+            checked_in_by = None
+            if ticket.checked_in_by:
+                checked_in_by = {
+                    'id': ticket.checked_in_by.id,
+                    'username': ticket.checked_in_by.username,
+                    'full_name': ticket.checked_in_by.full_name if hasattr(ticket.checked_in_by, 'full_name') else ticket.checked_in_by.username
+                }
 
+            results.append({
+                'ticket_id': ticket.ticket_id,
+                'attendee_name': ticket.attendee_name,
+                'attendee_email': ticket.attendee_email,
+                'attendee_phone': ticket.attendee_phone,
+                'ticket_type': {
+                    'id': ticket.ticket_type.id,
+                    'name': ticket.ticket_type.name,
+                    'price': str(ticket.ticket_type.price)
+                },
+                'purchase_date': ticket.purchase.created_at if ticket.purchase else ticket.created_at,
+                'payment_status': ticket.status,
+                'payment_reference': payment_reference,
+                'amount_paid': str(ticket.ticket_type.price),
+                'is_checked_in': ticket.is_checked_in,
+                'checked_in_at': ticket.checked_in_at,
+                'checked_in_by': checked_in_by
+            })
+
+        # ✅ Return paginated response if page exists, otherwise plain response
+        if page is not None:
+            response = paginator.get_paginated_response(results)
+            response.data['summary'] = summary
+            return response
+        
+        return Response({
+            'count': len(results),
+            'next': None,
+            'previous': None,
+            'summary': summary,
+            'results': results
+        })
+    
+    
 class UserDashboardStatsView(APIView):
     """
     GET /api/v1/auth/stats/
@@ -588,8 +736,14 @@ class AttendedEventsView(generics.ListAPIView):
         queryset = self.get_queryset()
         page = self.paginate_queryset(queryset)
 
+        # ✅ Handle case when page is None (no results or pagination disabled)
+        if page is not None:
+            tickets = page
+        else:
+            tickets = queryset
+
         results = []
-        for ticket in page:
+        for ticket in tickets:
             results.append({
                 'event': {
                     'id': ticket.event.id,
@@ -606,7 +760,17 @@ class AttendedEventsView(generics.ListAPIView):
                 'amount_paid': str(ticket.ticket_type.price) if ticket.ticket_type else '0.00'
             })
 
-        return self.get_paginated_response(results)
+        # ✅ ALWAYS return paginated response for consistency
+        if page is not None:
+            return self.get_paginated_response(results)
+        
+        # ✅ Return pagination structure even when page is None
+        return Response({
+            'count': len(results),
+            'next': None,
+            'previous': None,
+            'results': results
+        })
 
 
 class DownloadTicketView(APIView):
@@ -688,7 +852,7 @@ class OrganizerRevenueView(APIView):
     def get(self, request):
         user = request.user
         now = timezone.now()
-        
+
         # Get period filter
         period = request.query_params.get('period', 'all_time')
         
@@ -721,9 +885,9 @@ class OrganizerRevenueView(APIView):
             purchases_query = purchases_query.filter(created_at__lte=end_date)
 
         # Calculate summary
-        gross_revenue = purchases_query.aggregate(total=Sum('subtotal'))['total'] or 0
-        platform_fee_percentage = 5.0  # 5% platform fee
-        platform_fees = gross_revenue * (platform_fee_percentage / 100)
+        gross_revenue = purchases_query.aggregate(total=Sum('subtotal'))['total'] or Decimal('0')
+        platform_fee_percentage = Decimal('5.0')  # ✅ Define THEN convert to Decimal
+        platform_fees = gross_revenue * (platform_fee_percentage / Decimal('100'))
         net_revenue = gross_revenue - platform_fees
         
         total_tickets_sold = Ticket.objects.filter(
@@ -736,13 +900,13 @@ class OrganizerRevenueView(APIView):
             is_published=True
         ).count()
         
-        average_ticket_price = round(gross_revenue / total_tickets_sold, 2) if total_tickets_sold > 0 else 0
+        average_ticket_price = round(gross_revenue / total_tickets_sold, 2) if total_tickets_sold > 0 else Decimal('0')
 
         # Payout status (mocked for now - integrate with payment provider later)
         # In production, this would come from Paystack/Stripe payout data
-        total_paid_out = net_revenue * 0.6  # Mock: 60% already paid out
-        pending_balance = net_revenue * 0.2  # Mock: 20% pending
-        available_balance = net_revenue * 0.2  # Mock: 20% available
+        total_paid_out = net_revenue * Decimal('0.6')  # ✅ Use Decimal
+        pending_balance = net_revenue * Decimal('0.2')
+        available_balance = net_revenue * Decimal('0.2')
         
         # Calculate next payout date (mock: 15th of next month)
         from datetime import timedelta
@@ -763,8 +927,8 @@ class OrganizerRevenueView(APIView):
         ).order_by('-gross_revenue')[:10]  # Top 10 events
 
         for event_data in event_revenue:
-            event_gross = event_data['gross_revenue'] or 0
-            event_platform_fee = event_gross * (platform_fee_percentage / 100)
+            event_gross = event_data['gross_revenue'] or Decimal('0')
+            event_platform_fee = event_gross * (platform_fee_percentage / Decimal('100'))
             event_net = event_gross - event_platform_fee
             
             revenue_by_event.append({
@@ -795,8 +959,8 @@ class OrganizerRevenueView(APIView):
         ).order_by('-month')
 
         for month_data in monthly_revenue:
-            month_gross = month_data['gross_revenue'] or 0
-            month_platform_fee = month_gross * (platform_fee_percentage / 100)
+            month_gross = month_data['gross_revenue'] or Decimal('0')
+            month_platform_fee = month_gross * (platform_fee_percentage / Decimal('100'))
             month_net = month_gross - month_platform_fee
             
             revenue_by_month.append({
@@ -818,7 +982,7 @@ class OrganizerRevenueView(APIView):
             first_ticket = purchase.tickets.first()
             if first_ticket:
                 ticket_price = purchase.subtotal
-                transaction_platform_fee = ticket_price * (platform_fee_percentage / 100)
+                transaction_platform_fee = ticket_price * (platform_fee_percentage / Decimal('100'))
                 transaction_net = ticket_price - transaction_platform_fee
                 
                 recent_transactions.append({

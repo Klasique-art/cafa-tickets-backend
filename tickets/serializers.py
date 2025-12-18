@@ -372,43 +372,80 @@ class CreatePurchaseSerializer(serializers.Serializer):
 
 
 class TicketSerializer(serializers.ModelSerializer):
-    event = EventListSerializer(read_only=True)
-    ticket_type = TicketTypeSerializer(read_only=True)
-    is_valid = serializers.ReadOnlyField()
-    can_check_in = serializers.ReadOnlyField()
-    ticket_number = serializers.ReadOnlyField(source='ticket_id')
+    event = serializers.SerializerMethodField()
+    ticket_type = serializers.SerializerMethodField()
+    attendee_info = serializers.SerializerMethodField()
+    purchase_date = serializers.DateTimeField(source='created_at', read_only=True)
+    payment_reference = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
         fields = [
-            "id",
             "ticket_id",
-            "ticket_number",
+            "qr_code",
             "event",
             "ticket_type",
-            "attendee_name",
-            "attendee_email",
-            "attendee_phone",
+            "attendee_info",
+            "purchase_date",
+            "payment_reference",
+            "amount_paid",
             "status",
-            "qr_code",
             "is_checked_in",
             "checked_in_at",
-            "is_valid",
-            "can_check_in",
-            "created_at",
-            "updated_at",
         ]
         read_only_fields = [
-            "id",
             "ticket_id",
-            "ticket_number",
             "qr_code",
             "is_checked_in",
             "checked_in_at",
-            "created_at",
-            "updated_at",
         ]
 
+    def get_event(self, obj):
+        """Return event info in expected format"""
+        request = self.context.get('request')
+        return {
+            'id': obj.event.id,
+            'title': obj.event.title,
+            'slug': obj.event.slug,
+            'featured_image': request.build_absolute_uri(obj.event.featured_image.url) if obj.event.featured_image else None,
+            'category': {
+                'id': obj.event.category.id,
+                'name': obj.event.category.name
+            } if obj.event.category else None,
+            'venue_name': obj.event.venue_name,
+            'venue_city': obj.event.venue_city,
+            'start_date': obj.event.start_date,
+            'start_time': obj.event.start_time,
+            'status': obj.event.status
+        }
+
+    def get_ticket_type(self, obj):
+        """Return ticket type info"""
+        return {
+            'id': obj.ticket_type.id,
+            'name': obj.ticket_type.name,
+            'price': str(obj.ticket_type.price)
+        }
+
+    def get_attendee_info(self, obj):
+        """Return attendee info as nested object"""
+        return {
+            'name': obj.attendee_name,
+            'email': obj.attendee_email,
+            'phone': obj.attendee_phone
+        }
+
+    def get_payment_reference(self, obj):
+        """Get payment reference from purchase"""
+        if obj.purchase and obj.purchase.payments.exists():
+            payment = obj.purchase.payments.first()
+            return payment.payment_reference if hasattr(payment, 'payment_reference') else payment.payment_id
+        return None
+
+    def get_amount_paid(self, obj):
+        """Get amount paid (ticket price)"""
+        return str(obj.ticket_type.price) if obj.ticket_type else '0.00'
 
 class PaymentSerializer(serializers.ModelSerializer):
     purchase = PurchaseSerializer(read_only=True)
