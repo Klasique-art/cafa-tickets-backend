@@ -145,14 +145,15 @@ REST_FRAMEWORK = {
     "NON_FIELD_ERRORS_KEY": "non_field_errors",
 }
 
-DOMAIN = "localhost:3000"
+DOMAIN = "cafaticket.com"
 SITE_NAME = "Cafa Tickets"
 DJOSER = {
     "USER_CREATE_PASSWORD_RETYPE": False,
     "SEND_ACTIVATION_EMAIL": True,
     "ACTIVATION_URL": "activate/{uid}/{token}/",
     "PASSWORD_RESET_CONFIRM_URL": "password-reset?uid={uid}&token={token}",
-    "DOMAIN": "localhost:3000",
+    "EMAIL_FRONTEND_PROTOCOL": "https",
+    "EMAIL_FRONTEND_DOMAIN": "cafaticket.com",
     "SERIALIZERS": {
         "user_create": "users.serializers.UserCreateSerializer",
         "user": "users.serializers.UserSerializer",
@@ -173,7 +174,7 @@ EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="admin@example.com")
 
-FRONTEND_URL = "http://localhost:3000"
+FRONTEND_URL = "https://cafaticket.com"
 
 
 # jwt settings
@@ -186,10 +187,12 @@ SIMPLE_JWT = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+# CORS_ALLOWED_ORIGINS = [
+#     "http://localhost:3000",
+#     "http://127.0.0.1:3000",
+# ]
+
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 # Payment gateway settings
