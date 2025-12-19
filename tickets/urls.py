@@ -45,6 +45,14 @@ from .ticket_dashboard_views import (
     OrganizerRevenueView,
 )
 
+from .public_views import PublicStatsView
+
+from .contact_views import (
+    ContactMessageView,
+    NewsletterSubscribeView,
+    NewsletterUnsubscribeView
+)
+
 urlpatterns = [
     # ============================================================================
     # EVENT CATEGORIES
@@ -113,4 +121,12 @@ urlpatterns = [
     
     # Payment Detail (must come last - catch-all for payment_id)
     path('payments/<str:payment_id>/', PaymentDetailView.as_view(), name='payment-detail'),
+
+    # PUBLIC ENDPOINTS (no auth required)
+    path('public/stats/', PublicStatsView.as_view(), name='public-stats'),
+
+    # CONTACT & NEWSLETTER (public endpoints)
+    path('contact/', ContactMessageView.as_view(), name='contact-submit'),
+    path('newsletter/subscribe/', NewsletterSubscribeView.as_view(), name='newsletter-subscribe'),
+    path('newsletter/unsubscribe/', NewsletterUnsubscribeView.as_view(), name='newsletter-unsubscribe'),
 ]

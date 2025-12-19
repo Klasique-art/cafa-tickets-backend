@@ -905,3 +905,75 @@ class EventReview(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.event.title} ({self.rating}/5)"
+
+class ContactMessage(models.Model):
+    """Contact form submissions"""
+    name = models.CharField(max_length=255)
+    email = models.EmailField()
+    subject = models.CharField(max_length=255)
+    message = models.TextField()
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    
+    # Status tracking
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('new', 'New'),
+            ('in_progress', 'In Progress'),
+            ('resolved', 'Resolved'),
+            ('closed', 'Closed')
+        ],
+        default='new'
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    responded_at = models.DateTimeField(blank=True, null=True)
+    
+    # Admin notes
+    admin_notes = models.TextField(blank=True, null=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Contact Message'
+        verbose_name_plural = 'Contact Messages'
+    
+    def __str__(self):
+        return f"{self.name} - {self.subject}"
+
+
+class NewsletterSubscription(models.Model):
+    """Newsletter email subscriptions"""
+    email = models.EmailField(unique=True)
+    
+    # Subscription details
+    is_active = models.BooleanField(default=True)
+    subscribed_at = models.DateTimeField(auto_now_add=True)
+    unsubscribed_at = models.DateTimeField(blank=True, null=True)
+    
+    # Tracking
+    confirmation_token = models.CharField(max_length=100, blank=True, null=True)
+    is_confirmed = models.BooleanField(default=False)
+    confirmed_at = models.DateTimeField(blank=True, null=True)
+    
+    # Source tracking
+    source = models.CharField(
+        max_length=50,
+        choices=[
+            ('homepage', 'Homepage'),
+            ('footer', 'Footer'),
+            ('event_page', 'Event Page'),
+            ('checkout', 'Checkout'),
+            ('other', 'Other')
+        ],
+        default='homepage'
+    )
+    
+    class Meta:
+        ordering = ['-subscribed_at']
+        verbose_name = 'Newsletter Subscription'
+        verbose_name_plural = 'Newsletter Subscriptions'
+    
+    def __str__(self):
+        return self.email

@@ -10,6 +10,8 @@ from .models import (
     Ticket,
     Order,
     EventReview,
+    ContactMessage, 
+    NewsletterSubscription
 )
 
 
@@ -470,3 +472,40 @@ class EventReviewAdmin(admin.ModelAdmin):
         stars = "⭐" * obj.rating
         return format_html('<span style="font-size: 16px;">{}</span>', stars)
     rating_stars.short_description = "Rating"
+
+@admin.register(ContactMessage)
+class ContactMessageAdmin(admin.ModelAdmin):
+    list_display = ['name', 'email', 'subject', 'status', 'created_at']
+    list_filter = ['status', 'created_at']
+    search_fields = ['name', 'email', 'subject', 'message']
+    readonly_fields = ['created_at', 'updated_at']
+    
+    fieldsets = (
+        ('Contact Information', {
+            'fields': ('name', 'email', 'phone', 'subject', 'message')
+        }),
+        ('Status', {
+            'fields': ('status', 'admin_notes', 'responded_at')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )
+
+
+@admin.register(NewsletterSubscription)
+class NewsletterSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ['email', 'is_active', 'is_confirmed', 'source', 'subscribed_at']
+    list_filter = ['is_active', 'is_confirmed', 'source', 'subscribed_at']
+    search_fields = ['email']
+    readonly_fields = ['subscribed_at', 'unsubscribed_at', 'confirmed_at']
+    
+    actions = ['activate_subscriptions', 'deactivate_subscriptions']
+    
+    def activate_subscriptions(self, request, queryset):
+        queryset.update(is_active=True)
+    activate_subscriptions.short_description = "Activate selected subscriptions"
+    
+    def deactivate_subscriptions(self, request, queryset):
+        queryset.update(is_active=False)
+    deactivate_subscriptions.short_description = "Deactivate selected subscriptions"
