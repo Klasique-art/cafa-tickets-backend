@@ -145,7 +145,7 @@ REST_FRAMEWORK = {
     "NON_FIELD_ERRORS_KEY": "non_field_errors",
 }
 
-DOMAIN = "localhost:3000"
+DOMAIN = "cafaticket.com"
 SITE_NAME = "Cafa Tickets"
 DJOSER = {
     "USER_CREATE_PASSWORD_RETYPE": False,
