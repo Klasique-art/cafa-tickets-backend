@@ -152,7 +152,8 @@ DJOSER = {
     "SEND_ACTIVATION_EMAIL": True,
     "ACTIVATION_URL": "activate/{uid}/{token}/",
     "PASSWORD_RESET_CONFIRM_URL": "password-reset?uid={uid}&token={token}",
-    "DOMAIN": "cafaticket.com",
+    "EMAIL_FRONTEND_PROTOCOL": "https",
+    "EMAIL_FRONTEND_DOMAIN": "cafaticket.com",
     "SERIALIZERS": {
         "user_create": "users.serializers.UserCreateSerializer",
         "user": "users.serializers.UserSerializer",
