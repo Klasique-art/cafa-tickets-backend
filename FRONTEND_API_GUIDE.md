@@ -1,7 +1,7 @@
 # Cafa Tickets API - Frontend Integration Guide
 
 **Base URL:** `http://localhost:8000/api/v1/`  
-**Production URL:** `https://api.cafatickets.com/api/v1/`
+**Production URL:** `https://api.cafaticket.com/api/v1/`
 
 ---
 

@@ -329,7 +329,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING('Creating sample organizer user...'))
             organizer = User.objects.create_user(
                 username='eventorganizer',
-                email='organizer@cafatickets.com',
+                email='organizer@cafaticket.com',
                 password='password123',
                 full_name='Event Organizer',
             )

@@ -276,7 +276,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     def get_share_urls(self, obj):
         """Generate social share URLs"""
-        event_url = f"https://cafatickets.com/events/{obj.slug}"
+        event_url = f"https://cafaticket.com/events/{obj.slug}"
         return {
             'facebook': f"https://www.facebook.com/sharer/sharer.php?u={event_url}",
             'twitter': f"https://twitter.com/intent/tweet?url={event_url}&text=Check%20out%20{obj.title.replace(' ', '%20')}",

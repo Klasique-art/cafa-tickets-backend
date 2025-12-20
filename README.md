@@ -342,7 +342,7 @@ python manage.py runserver 8001
 
 For issues and questions:
 - GitHub Issues: [Create an issue]
-- Email: support@cafatickets.com
+- Email: support@cafaticket.com
 
 ## License
 

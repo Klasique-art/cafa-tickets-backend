@@ -835,7 +835,7 @@ class DeleteEventView(generics.DestroyAPIView):
             return Response({
                 'error': 'Cannot delete event',
                 'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). Please contact support for assistance.',
-                'support_email': 'support@cafatickets.com'
+                'support_email': 'support@cafaticket.com'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Delete the event
