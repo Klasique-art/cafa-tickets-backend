@@ -53,6 +53,9 @@ from .contact_views import (
     NewsletterUnsubscribeView
 )
 
+# Payment Views
+from .payment_views import initiate_payment, verify_payment
+
 urlpatterns = [
     # ============================================================================
     # EVENT CATEGORIES
@@ -111,6 +114,9 @@ urlpatterns = [
     # ============================================================================
     # Webhook (must come first - specific path)
     path('payments/webhook/', PaymentWebhookView.as_view(), name='payment-webhook'),
+
+    path('payments/initiate/', initiate_payment, name='initiate-payment'),
+    path('payments/verify/<str:reference>/', verify_payment, name='verify-payment'),
     
     # Payment History (list all payments)
     path('payments/', PaymentHistoryView.as_view(), name='payment-history'),

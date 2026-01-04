@@ -390,6 +390,7 @@ class TicketSerializer(serializers.ModelSerializer):
             "purchase_date",
             "payment_reference",
             "amount_paid",
+            "price",
             "status",
             "is_checked_in",
             "checked_in_at",
@@ -397,6 +398,7 @@ class TicketSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "ticket_id",
             "qr_code",
+            "price",
             "is_checked_in",
             "checked_in_at",
         ]

@@ -538,7 +538,43 @@ class Purchase(models.Model):
         if not self.reservation_expires_at:
             self.reservation_expires_at = timezone.now() + timedelta(minutes=10)
 
+        # Track if this is a status change to completed
+        is_new_completion = False
+        if self.pk:
+            try:
+                old_purchase = Purchase.objects.get(pk=self.pk)
+                if old_purchase.status != "completed" and self.status == "completed":
+                    is_new_completion = True
+            except Purchase.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)
+
+        # Create revenue record when purchase is completed
+        if is_new_completion:
+            self._create_revenue_record()
+
+    def _create_revenue_record(self):
+        """Create revenue record for the organizer when purchase is completed"""
+        from decimal import Decimal
+        
+        # Calculate platform commission (5%)
+        platform_commission_rate = Decimal('0.05')  # 5%
+        platform_fee = self.subtotal * platform_commission_rate
+        
+        # Organizer gets 95% of subtotal (subtotal - 5% commission)
+        organizer_earnings = self.subtotal - platform_fee
+        
+        # Create revenue record
+        OrganizerRevenue.objects.create(
+            organizer=self.event.organizer,
+            event=self.event,
+            purchase=self,
+            ticket_sales_amount=self.subtotal,
+            platform_fee=platform_fee,
+            organizer_earnings=organizer_earnings,
+            status='pending'  # Will become 'available' after 7 days
+        )
 
     @property
     def is_expired(self):
@@ -688,6 +724,13 @@ class Ticket(models.Model):
         help_text="Phone of the ticket holder"
     )
 
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Price paid for this ticket",
+        default=Decimal('0.00')
+    )
+
     # Status
     status = models.CharField(
         max_length=20,
@@ -764,6 +807,45 @@ class Ticket(models.Model):
     def ticket_number(self):
         """Alias for ticket_id for backward compatibility"""
         return self.ticket_id
+
+    def generate_qr_code(self):
+        """Generate QR code for ticket"""
+        import qrcode
+        from io import BytesIO
+        from django.core.files import File
+        import json
+        
+        # Create QR code
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        
+        # QR code contains ticket information
+        qr_data = {
+            'ticket_id': self.ticket_id,
+            'event_id': str(self.event.id),
+            'attendee_name': self.attendee_name,
+        }
+        
+        qr.add_data(json.dumps(qr_data))
+        qr.make(fit=True)
+        
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Save to BytesIO
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        
+        # Save to model
+        filename = f"ticket_{self.ticket_id}.png"
+        self.qr_code.save(filename, File(buffer), save=True)
+        
+        return self.qr_code
 
 
 # Legacy models kept for backwards compatibility
@@ -977,3 +1059,253 @@ class NewsletterSubscription(models.Model):
     
     def __str__(self):
         return self.email
+
+class OrganizerRevenue(models.Model):
+    """Track revenue earned by event organizers"""
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organizer = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="revenue_records",
+        help_text="Event organizer"
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="revenue_records",
+        help_text="Event that generated this revenue"
+    )
+    purchase = models.ForeignKey(
+        'Purchase',
+        on_delete=models.CASCADE,
+        related_name="revenue_record",
+        help_text="Purchase that generated this revenue"
+    )
+    
+    # Revenue breakdown
+    ticket_sales_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Total from ticket sales (subtotal)"
+    )
+    platform_fee = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Platform service fee deducted"
+    )
+    organizer_earnings = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Net earnings for organizer (ticket_sales - platform_fee)"
+    )
+    
+    # Withdrawal tracking
+    is_withdrawn = models.BooleanField(
+        default=False,
+        help_text="Whether this revenue has been withdrawn"
+    )
+    withdrawal = models.ForeignKey(
+        'WithdrawalRequest',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revenue_items",
+        help_text="Withdrawal request this revenue is part of"
+    )
+    
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', 'Pending'),
+            ('available', 'Available for Withdrawal'),
+            ('withdrawn', 'Withdrawn'),
+            ('on_hold', 'On Hold'),
+        ],
+        default='pending',
+        help_text="Revenue status"
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    available_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When revenue becomes available for withdrawal (e.g., 7 days after purchase)"
+    )
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Organizer Revenue'
+        verbose_name_plural = 'Organizer Revenue'
+        indexes = [
+            models.Index(fields=['organizer'], name='idx_revenue_organizer'),
+            models.Index(fields=['event'], name='idx_revenue_event'),
+            models.Index(fields=['status'], name='idx_revenue_status'),
+            models.Index(fields=['is_withdrawn'], name='idx_revenue_withdrawn'),
+        ]
+    
+    def __str__(self):
+        return f"{self.organizer.email} - {self.event.title} - GHS {self.organizer_earnings}"
+    
+    def save(self, *args, **kwargs):
+        # Set available_at to 7 days from creation (configurable)
+        if not self.available_at:
+            from datetime import timedelta
+            self.available_at = timezone.now() + timedelta(days=7)
+        super().save(*args, **kwargs)
+
+
+class WithdrawalRequest(models.Model):
+    """Withdrawal requests from organizers"""
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending Review'),
+        ('approved', 'Approved'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('rejected', 'Rejected'),
+        ('failed', 'Failed'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    withdrawal_id = models.CharField(
+        max_length=50,
+        unique=True,
+        editable=False,
+        help_text="Unique withdrawal identifier (WDR-XXXXXX)"
+    )
+    organizer = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="withdrawal_requests",
+        help_text="Organizer requesting withdrawal"
+    )
+    payment_profile = models.ForeignKey(
+        'users.PaymentProfile',
+        on_delete=models.PROTECT,
+        related_name="withdrawals",
+        help_text="Bank account to receive funds"
+    )
+    
+    # Amount
+    requested_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount requested by organizer"
+    )
+    transfer_fee = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        help_text="Bank transfer fee (deducted from requested amount)"
+    )
+    final_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Final amount to be transferred (requested_amount - transfer_fee)"
+    )
+    
+    # Status and processing
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        help_text="Withdrawal status"
+    )
+    
+    # Paystack transfer details
+    transfer_code = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Paystack transfer code"
+    )
+    transfer_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Paystack transfer reference"
+    )
+    transfer_response = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Full Paystack response"
+    )
+    
+    # Admin review
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_withdrawals",
+        help_text="Admin who reviewed this request"
+    )
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When request was reviewed"
+    )
+    admin_notes = models.TextField(
+        blank=True,
+        help_text="Admin notes about this withdrawal"
+    )
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Reason for rejection (if rejected)"
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When withdrawal was completed"
+    )
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Withdrawal Request'
+        verbose_name_plural = 'Withdrawal Requests'
+        indexes = [
+            models.Index(fields=['withdrawal_id'], name='idx_withdrawal_id'),
+            models.Index(fields=['organizer'], name='idx_withdrawal_organizer'),
+            models.Index(fields=['status'], name='idx_withdrawal_status'),
+        ]
+    
+    def __str__(self):
+        return f"{self.withdrawal_id} - {self.organizer.email} - GHS {self.requested_amount}"
+    
+    def save(self, *args, **kwargs):
+        if not self.withdrawal_id:
+            self.withdrawal_id = f"WDR-{uuid.uuid4().hex[:10].upper()}"
+        
+        # Calculate final amount
+        self.final_amount = self.requested_amount - self.transfer_fee
+        
+        super().save(*args, **kwargs)
+    
+    def calculate_transfer_fee(self):
+        """Calculate Paystack transfer fee for bank transfers"""
+        # Paystack Ghana charges:
+        # - Free for transfers below GHS 5,000
+        # - GHS 10 flat fee for transfers GHS 5,000 and above
+        
+        if self.requested_amount >= Decimal('5000.00'):
+            return Decimal('10.00')
+        else:
+            return Decimal('0.00')  # Free for amounts below GHS 5,000
+    
+    def can_approve(self):
+        """Check if withdrawal can be approved"""
+        return self.status == 'pending'
+    
+    def can_reject(self):
+        """Check if withdrawal can be rejected"""
+        return self.status in ['pending', 'approved']
+    
+    def can_process(self):
+        """Check if withdrawal can be processed"""
+        return self.status == 'approved'
