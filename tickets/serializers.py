@@ -8,6 +8,7 @@ from .models import (
     TicketType,
     Purchase,
     Payment,
+    Payment,
     Ticket,
     Order,
     EventReview,
@@ -440,9 +441,13 @@ class TicketSerializer(serializers.ModelSerializer):
 
     def get_payment_reference(self, obj):
         """Get payment reference from purchase"""
-        if obj.purchase and obj.purchase.payments.exists():
-            payment = obj.purchase.payments.first()
-            return payment.payment_reference if hasattr(payment, 'payment_reference') else payment.payment_id
+        if obj.purchase:
+            try:
+                # Payment has OneToOneField relationship with Purchase
+                payment = obj.purchase.payment
+                return payment.reference if payment else None
+            except Payment.DoesNotExist:
+                return None
         return None
 
     def get_amount_paid(self, obj):
