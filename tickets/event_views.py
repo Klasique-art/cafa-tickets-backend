@@ -230,7 +230,7 @@ class EventDetailView(generics.RetrieveAPIView):
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
-
+ 
 class EventCreateView(generics.CreateAPIView):
     """
     POST /api/v1/events/

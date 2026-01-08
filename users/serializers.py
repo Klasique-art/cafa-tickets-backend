@@ -24,6 +24,7 @@ class UserSerializer(BaseUserSerializer):
             "email",
             "full_name",
             "phone_number",
+            "is_organizer",
             "profile_image",
             "bio",
             "city",

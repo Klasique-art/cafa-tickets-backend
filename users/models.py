@@ -44,6 +44,8 @@ class User(AbstractUser):
         default=False, help_text="Indicates if user completed profile setup"
     )
 
+    is_organizer = models.BooleanField(default=False, help_text="Indicates if user has created at least one event (for verification purposes)")
+
     username_last_changed = models.DateTimeField(
         null=True, blank=True, help_text="Last time username was changed"
     )
@@ -67,6 +69,7 @@ class User(AbstractUser):
     updated_at = models.DateTimeField(
         auto_now=True, help_text="Date and time of last profile update"
     )
+
 
     objects = UserManager()
 

@@ -210,7 +210,6 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             "description",
             "short_description",
             "category_id",
-            "payment_profile",
             "featured_image",
             "additional_images",
             "venue_name",

@@ -310,7 +310,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
 class EventCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for creating and updating events"""
     category_slug = serializers.CharField(required=True)
-    payment_profile_id = serializers.UUIDField(required=True)
+    payment_profile_id = serializers.UUIDField(required=False, allow_null=True)
     ticket_types = serializers.CharField(required=True)
     additional_images = serializers.ListField(
         child=serializers.ImageField(),
@@ -363,6 +363,8 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
 
     def validate_payment_profile_id(self, value):
         """Validate payment profile exists and is verified"""
+        if not value:
+            return None  # Allow None/empty
         request = self.context.get('request')
         try:
             profile = PaymentProfile.objects.get(id=value, user=request.user)
@@ -444,13 +446,19 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
 
         # Get category and payment profile
         category = EventCategory.objects.get(slug=category_slug)
-        payment_profile = PaymentProfile.objects.get(id=payment_profile_id)
+        payment_profile = PaymentProfile.objects.get(id=payment_profile_id) if payment_profile_id else None
 
+        # Get user and set as organizer if first event
+        user = self.context['request'].user
+        if not user.is_organizer:
+            user.is_organizer = True
+            user.save(update_fields=['is_organizer'])
+        
         # Create event
         event = Event.objects.create(
             category=category,
-            payment_profile=payment_profile,
-            organizer=self.context['request'].user,
+            payment_profile=payment_profile,  # Can be None now
+            organizer=user,
             featured_image=featured_image,  # ImageField handles this fine
             **validated_data
         )
