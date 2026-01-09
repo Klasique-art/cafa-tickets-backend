@@ -44,7 +44,52 @@ class User(AbstractUser):
         default=False, help_text="Indicates if user completed profile setup"
     )
 
-    is_organizer = models.BooleanField(default=False, help_text="Indicates if user has created at least one event (for verification purposes)")
+    is_organizer = models.BooleanField(
+        default=False, 
+        help_text="Verified organizer status - enabled after ID verification"
+    )
+
+    # Verification fields
+    VERIFICATION_STATUS_CHOICES = [
+        ('not_started', 'Not Started'),
+        ('id_uploaded', 'ID Uploaded'),
+        ('pending', 'Pending Verification'),
+        ('verified', 'Verified'),
+        ('rejected', 'Rejected'),
+    ]
+
+    id_document = models.ImageField(
+        upload_to="verification/ids/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Government-issued ID document"
+    )
+    selfie_image = models.ImageField(
+        upload_to="verification/selfies/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Selfie for identity verification"
+    )
+    verification_status = models.CharField(
+        max_length=20,
+        choices=VERIFICATION_STATUS_CHOICES,
+        default='not_started',
+        help_text="Current verification status"
+    )
+    verification_submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When verification was submitted"
+    )
+    verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When user was verified as organizer"
+    )
+    verification_notes = models.TextField(
+        blank=True,
+        help_text="Admin notes about verification (rejection reason, etc.)"
+    )
 
     username_last_changed = models.DateTimeField(
         null=True, blank=True, help_text="Last time username was changed"
@@ -260,6 +305,20 @@ class PaymentProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Add this new field
+    paystack_recipient_code = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Paystack transfer recipient code"
+    )
+
+    # Add after paystack_recipient_code field
+    verification_charge_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Paystack charge reference for GHS 1 verification"
+    )
+
     class Meta:
         ordering = ["-is_default", "-created_at"]
         verbose_name = "Payment Profile"
@@ -291,6 +350,30 @@ class PaymentProfile(models.Model):
             ).update(is_default=False)
 
         super().save(*args, **kwargs)
+
+    @property
+    def account_number(self):
+        """Get account number from account_details JSON"""
+        if self.method == 'bank_transfer':
+            return self.account_details.get('account_number', '')
+        elif self.method == 'mobile_money':
+            return self.account_details.get('mobile_number', '')
+        return ''
+    
+    @property
+    def account_name(self):
+        """Get account name from account_details JSON"""
+        return self.account_details.get('account_name', '')
+    
+    @property
+    def bank_code(self):
+        """Get bank code from account_details JSON"""
+        return self.account_details.get('bank_code', '')
+    
+    @property
+    def bank_name(self):
+        """Get bank name from account_details JSON"""
+        return self.account_details.get('bank_name', '')
 
     def get_masked_account_details(self):
         """Return masked account details for security"""

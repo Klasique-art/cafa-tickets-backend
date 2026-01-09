@@ -902,11 +902,39 @@ class OrganizerRevenueView(APIView):
         
         average_ticket_price = round(gross_revenue / total_tickets_sold, 2) if total_tickets_sold > 0 else Decimal('0')
 
-        # Payout status (mocked for now - integrate with payment provider later)
-        # In production, this would come from Paystack/Stripe payout data
-        total_paid_out = net_revenue * Decimal('0.6')  # ✅ Use Decimal
-        pending_balance = net_revenue * Decimal('0.2')
-        available_balance = net_revenue * Decimal('0.2')
+        # REAL PAYOUT STATUS (using actual revenue records)
+        from .models import OrganizerRevenue
+
+        # Get revenue records for this organizer
+        revenue_queryset = OrganizerRevenue.objects.filter(organizer=user)
+
+        # Filter by period if needed
+        if start_date:
+            revenue_queryset = revenue_queryset.filter(created_at__gte=start_date)
+        if end_date:
+            revenue_queryset = revenue_queryset.filter(created_at__lte=end_date)
+
+        # Update any pending revenue that's now available (past 7-day holding period)
+        OrganizerRevenue.objects.filter(
+            status='pending',
+            available_at__lte=now
+        ).update(status='available')
+
+        # Available balance (ready to withdraw)
+        available_balance = revenue_queryset.filter(
+            status='available',
+            is_withdrawn=False
+        ).aggregate(total=Sum('organizer_earnings'))['total'] or Decimal('0')
+
+        # Pending balance (still in 7-day holding period)
+        pending_balance = revenue_queryset.filter(
+            status='pending'
+        ).aggregate(total=Sum('organizer_earnings'))['total'] or Decimal('0')
+
+        # Total paid out (already withdrawn)
+        total_paid_out = revenue_queryset.filter(
+            is_withdrawn=True
+        ).aggregate(total=Sum('organizer_earnings'))['total'] or Decimal('0')
         
         # Calculate next payout date (mock: 15th of next month)
         from datetime import timedelta
@@ -1014,3 +1042,5 @@ class OrganizerRevenueView(APIView):
             'revenue_by_month': revenue_by_month,
             'recent_transactions': recent_transactions
         })
+
+

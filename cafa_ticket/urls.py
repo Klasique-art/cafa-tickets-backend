@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from users.paystack_webhooks import paystack_transfer_webhook
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -9,6 +10,8 @@ urlpatterns = [
     path('api/v1/auth/', include('djoser.urls.jwt')),
     path('api/v1/auth/', include('users.urls')),
     path('api/v1/', include('tickets.urls')),
+    # Paystack Webhooks
+    path('api/v1/webhooks/paystack/transfer/', paystack_transfer_webhook, name='paystack-transfer-webhook'),
 ]
 
 if settings.DEBUG:

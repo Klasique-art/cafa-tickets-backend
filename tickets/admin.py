@@ -11,7 +11,9 @@ from .models import (
     Order,
     EventReview,
     ContactMessage, 
-    NewsletterSubscription
+    NewsletterSubscription,
+    OrganizerRevenue, 
+    WithdrawalRequest
 )
 
 
@@ -509,3 +511,56 @@ class NewsletterSubscriptionAdmin(admin.ModelAdmin):
     def deactivate_subscriptions(self, request, queryset):
         queryset.update(is_active=False)
     deactivate_subscriptions.short_description = "Deactivate selected subscriptions"
+
+
+@admin.register(OrganizerRevenue)
+class OrganizerRevenueAdmin(admin.ModelAdmin):
+    list_display = [
+        'id',
+        'organizer_email',
+        'event_title',
+        'organizer_earnings',
+        'platform_fee',
+        'status',
+        'is_withdrawn',
+        'created_at',
+        'available_at'
+    ]
+    list_filter = ['status', 'is_withdrawn', 'created_at']
+    search_fields = ['organizer__email', 'event__title']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    ordering = ['-created_at']
+    
+    def organizer_email(self, obj):
+        return obj.organizer.email
+    organizer_email.short_description = 'Organizer'
+    
+    def event_title(self, obj):
+        return obj.event.title if obj.event else 'N/A'
+    event_title.short_description = 'Event'
+
+
+@admin.register(WithdrawalRequest)
+class WithdrawalRequestAdmin(admin.ModelAdmin):
+    list_display = [
+        'withdrawal_id',
+        'organizer_email',
+        'requested_amount',
+        'final_amount',
+        'status',
+        'created_at'
+    ]
+    list_filter = ['status', 'created_at']
+    search_fields = ['withdrawal_id', 'organizer__email']
+    readonly_fields = [
+        'id',
+        'withdrawal_id',
+        'created_at',
+        'updated_at',
+        'final_amount'
+    ]
+    ordering = ['-created_at']
+    
+    def organizer_email(self, obj):
+        return obj.organizer.email
+    organizer_email.short_description = 'Organizer'

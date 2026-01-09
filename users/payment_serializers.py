@@ -120,9 +120,14 @@ class PaymentProfileCreateSerializer(serializers.ModelSerializer):
                     )
 
             # Validate account number (10 digits)
-            if len(value['account_number']) != 10 or not value['account_number'].isdigit():
+            account_number = value['account_number']
+            if not account_number.isdigit():
                 raise serializers.ValidationError(
-                    "Account number must be 10 digits"
+                    "Account number must contain only digits"
+                )
+            if not (8 <= len(account_number) <= 17):
+                raise serializers.ValidationError(
+                    "Account number must be between 8 and 17 digits"
                 )
 
         return value

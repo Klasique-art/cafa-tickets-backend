@@ -109,3 +109,58 @@ class UserSettingsSerializer(serializers.ModelSerializer):
         Update settings and return formatted response
         """
         return instance.update_settings(**validated_data)
+
+class IDUploadSerializer(serializers.Serializer):
+    """Serializer for ID document upload"""
+    id_document = serializers.ImageField(
+        required=True,
+        help_text="Government-issued ID (PNG, JPG, max 10MB)"
+    )
+    
+    def validate_id_document(self, value):
+        # Validate file size (10MB max)
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError("ID document must be less than 10MB")
+        
+        # Validate file type
+        valid_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+        if value.content_type not in valid_types:
+            raise serializers.ValidationError("ID document must be JPG, PNG, or WebP")
+        
+        return value
+
+
+class SelfieUploadSerializer(serializers.Serializer):
+    """Serializer for selfie upload"""
+    selfie_image = serializers.ImageField(
+        required=True,
+        help_text="Selfie photo (PNG, JPG, max 10MB)"
+    )
+    
+    def validate_selfie_image(self, value):
+        # Validate file size (10MB max)
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError("Selfie must be less than 10MB")
+        
+        # Validate file type
+        valid_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+        if value.content_type not in valid_types:
+            raise serializers.ValidationError("Selfie must be JPG, PNG, or WebP")
+        
+        return value
+
+
+class VerificationStatusSerializer(serializers.ModelSerializer):
+    """Serializer for verification status response"""
+    class Meta:
+        model = User
+        fields = [
+            'verification_status',
+            'verification_submitted_at',
+            'verified_at',
+            'verification_notes',
+            'is_organizer',
+            'id_document',
+            'selfie_image'
+        ]
+        read_only_fields = fields

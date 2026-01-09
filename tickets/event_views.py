@@ -233,17 +233,47 @@ class EventDetailView(generics.RetrieveAPIView):
  
 class EventCreateView(generics.CreateAPIView):
     """
-    POST /api/v1/events/
+    POST /api/v1/events/create/
+    Create a new event (requires verified organizer status)
     """
     serializer_class = EventCreateUpdateSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [parsers.MultiPartParser, parsers.FormParser]
 
     def create(self, request, *args, **kwargs):
-        # ✅ Use dict() instead of .copy() to avoid deepcopy on file objects
+        user = request.user
+        
+        # ✅ CHECK 1: User must be verified as organizer
+        if not user.is_organizer:
+            return Response({
+                'success': False,
+                'message': 'You must be a verified organizer to create events',
+                'error_code': 'NOT_VERIFIED_ORGANIZER',
+                'data': {
+                    'verification_status': user.verification_status,
+                    'is_organizer': user.is_organizer,
+                    'next_steps': self._get_verification_next_steps(user)
+                }
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # ✅ CHECK 2: Verification must be completed and approved
+        if user.verification_status != 'verified':
+            return Response({
+                'success': False,
+                'message': self._get_verification_message(user),
+                'error_code': f'VERIFICATION_{user.verification_status.upper()}',
+                'data': {
+                    'verification_status': user.verification_status,
+                    'is_organizer': user.is_organizer,
+                    'next_steps': self._get_verification_next_steps(user)
+                }
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # ✅ User is verified - proceed with event creation
+        # Use dict() instead of .copy() to avoid deepcopy on file objects
         data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
         
-        # ✅ Handle additional_images separately
+        # Handle additional_images separately
         additional_images = request.FILES.getlist('additional_images')
         if additional_images:
             data['additional_images'] = additional_images
@@ -253,8 +283,9 @@ class EventCreateView(generics.CreateAPIView):
         event = serializer.save()
 
         return Response({
+            'success': True,
             'message': 'Event created successfully',
-            'event': {
+            'data': {
                 'id': event.id,
                 'title': event.title,
                 'slug': event.slug,
@@ -263,6 +294,46 @@ class EventCreateView(generics.CreateAPIView):
                 'ticket_types_created': event.ticket_types.count()
             }
         }, status=status.HTTP_201_CREATED)
+    
+    def _get_verification_message(self, user):
+        """Get appropriate message based on verification status"""
+        messages = {
+            'not_started': 'Please complete identity verification to create events. Upload your ID and selfie to get started.',
+            'id_uploaded': 'Please upload your selfie to complete verification.',
+            'pending': 'Your verification is being processed. Please check back shortly.',
+            'rejected': 'Your verification was not successful. Please review the feedback and try again.',
+        }
+        return messages.get(user.verification_status, 'Please complete verification to create events.')
+    
+    def _get_verification_next_steps(self, user):
+        """Get next steps based on verification status"""
+        steps = {
+            'not_started': {
+                'action': 'Start verification',
+                'endpoint': '/api/v1/auth/verification/upload-id/',
+                'method': 'POST',
+                'description': 'Upload your government-issued ID'
+            },
+            'id_uploaded': {
+                'action': 'Complete verification',
+                'endpoint': '/api/v1/auth/verification/upload-selfie/',
+                'method': 'POST',
+                'description': 'Upload a selfie for identity verification'
+            },
+            'pending': {
+                'action': 'Check status',
+                'endpoint': '/api/v1/auth/verification/status/',
+                'method': 'GET',
+                'description': 'Check your verification status'
+            },
+            'rejected': {
+                'action': 'Retry verification',
+                'endpoint': '/api/v1/auth/verification/retry/',
+                'method': 'POST',
+                'description': 'Reset and retry verification process'
+            },
+        }
+        return steps.get(user.verification_status, {})
 
 
 class EventUpdateView(generics.UpdateAPIView):

@@ -13,9 +13,21 @@ from .payment_views import (
     SetDefaultPaymentProfileView,
     VerificationStatusView,
     RetryVerificationView,
+    CreateWithdrawalRequestView,
+    WithdrawalHistoryView,
+    WithdrawalDetailView,
+    CancelWithdrawalView,
 )
 # Import from tickets app for user dashboard stats
 from tickets.ticket_dashboard_views import UserDashboardStatsView
+
+# User identity verification views (renamed to avoid conflicts)
+from .verification_views import (
+    UploadIDView,
+    UploadSelfieView,
+    UserVerificationStatusView,   # Renamed!
+    UserRetryVerificationView      # Renamed!
+)
 
 urlpatterns = [
     # User Profile & Settings
@@ -35,4 +47,16 @@ urlpatterns = [
     path('payment-profile/<uuid:pk>/retry-verification/', RetryVerificationView.as_view(), name='payment-profile-retry-verification'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('change-username/', ChangeUsernameView.as_view(), name='change-username'),
+
+    # User Identity Verification endpoints (for becoming an organizer)
+    path('verification/upload-id/', UploadIDView.as_view(), name='upload-id'),
+    path('verification/upload-selfie/', UploadSelfieView.as_view(), name='upload-selfie'),
+    path('verification/status/', UserVerificationStatusView.as_view(), name='user-verification-status'),
+    path('verification/retry/', UserRetryVerificationView.as_view(), name='user-retry-verification'),
+
+    # Withdrawal endpoints
+    path('withdrawal/request/', CreateWithdrawalRequestView.as_view(), name='withdrawal-request'),
+    path('withdrawal/history/', WithdrawalHistoryView.as_view(), name='withdrawal-history'),
+    path('withdrawal/<str:withdrawal_id>/', WithdrawalDetailView.as_view(), name='withdrawal-detail'),
+    path('withdrawal/<str:withdrawal_id>/cancel/', CancelWithdrawalView.as_view(), name='withdrawal-cancel'),
 ]
