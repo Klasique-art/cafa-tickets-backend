@@ -204,19 +204,6 @@ Shows checked-in events.
 ### 7.1 Create Profile
 `POST /auth/users/payment-profile/` 🔒
 
-**Mobile Money:**
-```json
-{
-  "method": "mobile_money",
-  "name": "My MTN Account",
-  "description": "Primary",
-  "account_details": {
-    "mobile_number": "+233241234567",
-    "network": "MTN",
-    "account_name": "John Doe"
-  }
-}
-```
 
 **Bank Transfer:**
 ```json
@@ -228,7 +215,7 @@ Shows checked-in events.
     "account_number": "1234567890",
     "account_name": "John Doe",
     "bank_name": "CAL Bank",
-    "bank_code": "CAL"
+    "bank_code": "140100"
   }
 }
 ```
