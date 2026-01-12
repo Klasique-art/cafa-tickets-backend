@@ -17,6 +17,7 @@ ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="").split(",")
 # Application definition
 
 INSTALLED_APPS = [
+    'django.contrib.sites',
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -146,7 +147,7 @@ REST_FRAMEWORK = {
     "NON_FIELD_ERRORS_KEY": "non_field_errors",
 }
 
-DOMAIN = "cafaticket.com"
+DOMAIN = "cafatickets.com"
 SITE_NAME = "Cafa Tickets"
 DJOSER = {
     "USER_CREATE_PASSWORD_RETYPE": False,
@@ -154,7 +155,7 @@ DJOSER = {
     "ACTIVATION_URL": "activate/{uid}/{token}/",
     "PASSWORD_RESET_CONFIRM_URL": "password-reset?uid={uid}&token={token}",
     "EMAIL_FRONTEND_PROTOCOL": "https",
-    "EMAIL_FRONTEND_DOMAIN": "cafaticket.com",
+    "EMAIL_FRONTEND_DOMAIN": "cafatickets.com",
     "SERIALIZERS": {
         "user_create": "users.serializers.UserCreateSerializer",
         "user": "users.serializers.UserSerializer",
@@ -175,7 +176,7 @@ EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="admin@example.com")
 
-FRONTEND_URL = "https://cafaticket.com"
+FRONTEND_URL = "https://cafatickets.com"
 
 
 # jwt settings

@@ -362,7 +362,7 @@ class CreateWithdrawalRequestView(APIView):
         # Check for pending withdrawals
         pending_withdrawals = WithdrawalRequest.objects.filter(
             organizer=user,
-            status__in=['pending', 'approved', 'processing']
+            status__in=['pending', 'processing']  # ← Remove 'approved'
         )
         
         if pending_withdrawals.exists():

@@ -102,19 +102,11 @@ class UploadSelfieView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Check if already verified
-            if user.verification_status == 'verified':
-                return Response(
-                    {
-                        'success': False,
-                        'message': 'You are already verified',
-                        'data': {
-                            'verification_status': user.verification_status,
-                            'is_organizer': user.is_organizer
-                        }
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            # ✅ REMOVED: Already verified check - allows re-verification
+            # This enables using the same endpoint for face matching features
+            
+            # Remember if user was already an organizer (to preserve status if verification fails)
+            was_already_organizer = user.is_organizer
             
             # Save selfie
             user.selfie_image = serializer.validated_data['selfie_image']
@@ -125,7 +117,7 @@ class UploadSelfieView(APIView):
             logger.info(f"User {user.email} uploaded selfie, starting verification")
             
             # Simulate verification process (instant for now)
-            verification_result = self._simulate_verification(user)
+            verification_result = self._simulate_verification(user, was_already_organizer)
             
             return Response(
                 {
@@ -145,7 +137,7 @@ class UploadSelfieView(APIView):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    def _simulate_verification(self, user):
+    def _simulate_verification(self, user, was_already_organizer):
         """
         Simulate face verification process
         In production, this would call a 3rd party API like:
@@ -153,6 +145,10 @@ class UploadSelfieView(APIView):
         - Azure Face API
         - Face++
         - CompareFaces
+        
+        Args:
+            user: User instance
+            was_already_organizer: Boolean - whether user was already an organizer
         """
         
         # Simulate 90% success rate (you can adjust this)
@@ -161,7 +157,7 @@ class UploadSelfieView(APIView):
         if is_match:
             # Verification successful
             user.verification_status = 'verified'
-            user.is_organizer = True  # Grant organizer access
+            user.is_organizer = True  # Grant or maintain organizer access
             user.verified_at = timezone.now()
             user.verification_notes = 'Automated verification successful'
             user.save(update_fields=[
@@ -174,7 +170,7 @@ class UploadSelfieView(APIView):
             logger.info(f"User {user.email} verification SUCCESSFUL")
             
             return {
-                'message': 'Verification successful! You can now create events.',
+                'message': 'Verification successful! You can now create events.' if not was_already_organizer else 'Face verification successful!',
                 'data': {
                     'verification_status': 'verified',
                     'is_organizer': True,
@@ -186,20 +182,25 @@ class UploadSelfieView(APIView):
             # Verification failed
             user.verification_status = 'rejected'
             user.verification_notes = 'Face does not match ID document. Please try again with clearer photos.'
-            user.save(update_fields=['verification_status', 'verification_notes'])
             
-            logger.warning(f"User {user.email} verification FAILED")
+            # 🔥 CRITICAL: Preserve organizer status if user was already verified
+            if not was_already_organizer:
+                user.is_organizer = False  # Only revoke if this was first-time verification
+            
+            user.save(update_fields=['verification_status', 'verification_notes', 'is_organizer'])
+            
+            logger.warning(f"User {user.email} verification FAILED (organizer status preserved: {was_already_organizer})")
             
             return {
                 'message': 'Verification failed. Please ensure your selfie clearly shows your face and matches your ID.',
                 'data': {
                     'verification_status': 'rejected',
-                    'is_organizer': False,
+                    'is_organizer': user.is_organizer,  # Will be True if was already organizer
                     'rejection_reason': user.verification_notes,
-                    'can_retry': True
+                    'can_retry': True,
+                    'organizer_status_preserved': was_already_organizer
                 }
             }
-
 
 class UserVerificationStatusView(APIView):
     """

@@ -560,7 +560,54 @@ class WithdrawalRequestAdmin(admin.ModelAdmin):
         'final_amount'
     ]
     ordering = ['-created_at']
+    actions = ['cancel_stuck_withdrawals', 'mark_as_failed']  # ← NEW
     
     def organizer_email(self, obj):
         return obj.organizer.email
     organizer_email.short_description = 'Organizer'
+    
+    # ← ADD THESE NEW METHODS
+    def cancel_stuck_withdrawals(self, request, queryset):
+        """Cancel withdrawals that are stuck in processing"""
+        from tickets.models import OrganizerRevenue
+        
+        count = 0
+        for withdrawal in queryset.filter(status__in=['pending', 'processing']):
+            # Mark as failed
+            withdrawal.status = 'failed'
+            withdrawal.rejection_reason = 'Cancelled by admin - Paystack insufficient balance or network error'
+            withdrawal.save()
+            
+            # Release reserved revenue back to available
+            OrganizerRevenue.objects.filter(
+                withdrawal=withdrawal
+            ).update(
+                withdrawal=None,
+                status='available'
+            )
+            count += 1
+        
+        self.message_user(request, f'{count} withdrawal(s) cancelled and revenue released.')
+    cancel_stuck_withdrawals.short_description = 'Cancel stuck withdrawals'
+    
+    def mark_as_failed(self, request, queryset):
+        """Mark selected withdrawals as failed"""
+        from tickets.models import OrganizerRevenue
+        
+        count = 0
+        for withdrawal in queryset:
+            withdrawal.status = 'failed'
+            withdrawal.rejection_reason = 'Failed - insufficient balance in Paystack account'
+            withdrawal.save()
+            
+            # Release reserved revenue back to available
+            OrganizerRevenue.objects.filter(
+                withdrawal=withdrawal
+            ).update(
+                withdrawal=None,
+                status='available'
+            )
+            count += 1
+        
+        self.message_user(request, f'{count} withdrawal(s) marked as failed and revenue released.')
+    mark_as_failed.short_description = 'Mark as failed'
