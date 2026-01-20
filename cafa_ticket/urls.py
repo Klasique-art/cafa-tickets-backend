@@ -23,3 +23,7 @@ handler404 = 'cafa_ticket.error_views.custom_404_view'
 handler500 = 'cafa_ticket.error_views.custom_500_view'
 handler403 = 'cafa_ticket.error_views.custom_403_view'
 handler400 = 'cafa_ticket.error_views.custom_400_view'
+
+admin.site.site_title = "CAFA Ticket Admin"
+admin.site.site_header = "CAFA Ticket Administration"
+admin.site.index_title = "CAFA Ticket Admin Dashboard"

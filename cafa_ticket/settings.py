@@ -203,6 +203,11 @@ SIMPLE_JWT = {
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+# CSRF settings
+CSRF_TRUSTED_ORIGINS = [
+    "https://api.cafatickets.com",
+    "https://cafatickets.com",
+]
 
 # Payment gateway settings
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
