@@ -303,3 +303,6 @@ LOGGING = {
 
 # whitenoise settings
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+
+FACE_VERIFICATION_API_URL = config("FACE_VERIFICATION_API_URL", default="")

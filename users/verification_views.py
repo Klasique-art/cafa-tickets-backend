@@ -10,7 +10,7 @@ from .serializers import (
     SelfieUploadSerializer, 
     VerificationStatusSerializer
 )
-import random
+import requests
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,9 +102,6 @@ class UploadSelfieView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # ✅ REMOVED: Already verified check - allows re-verification
-            # This enables using the same endpoint for face matching features
-            
             # Remember if user was already an organizer (to preserve status if verification fails)
             was_already_organizer = user.is_organizer
             
@@ -116,8 +113,8 @@ class UploadSelfieView(APIView):
             
             logger.info(f"User {user.email} uploaded selfie, starting verification")
             
-            # Simulate verification process (instant for now)
-            verification_result = self._simulate_verification(user, was_already_organizer)
+            # Call real face verification service
+            verification_result = self._verify_face(user, was_already_organizer)
             
             return Response(
                 {
@@ -137,70 +134,179 @@ class UploadSelfieView(APIView):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    def _simulate_verification(self, user, was_already_organizer):
+    def _verify_face(self, user, was_already_organizer):
         """
-        Simulate face verification process
-        In production, this would call a 3rd party API like:
-        - AWS Rekognition
-        - Azure Face API
-        - Face++
-        - CompareFaces
+        Call face verification microservice to verify user identity
         
         Args:
             user: User instance
             was_already_organizer: Boolean - whether user was already an organizer
+        
+        Returns:
+            dict: Verification result with message and data
         """
+        from django.conf import settings
         
-        # Simulate 90% success rate (you can adjust this)
-        is_match = random.random() < 0.9
-        
-        if is_match:
-            # Verification successful
-            user.verification_status = 'verified'
-            user.is_organizer = True  # Grant or maintain organizer access
-            user.verified_at = timezone.now()
-            user.verification_notes = 'Automated verification successful'
-            user.save(update_fields=[
-                'verification_status', 
-                'is_organizer', 
-                'verified_at', 
-                'verification_notes'
-            ])
+        try:
+            # Get the face verification API URL from settings
+            face_api_url = getattr(settings, 'FACE_VERIFICATION_API_URL', 'http://localhost:8001')
             
-            logger.info(f"User {user.email} verification SUCCESSFUL")
+            # Prepare files for API call
+            id_document_file = user.id_document.open('rb')
+            selfie_file = user.selfie_image.open('rb')
             
-            return {
-                'message': 'Verification successful! You can now create events.' if not was_already_organizer else 'Face verification successful!',
-                'data': {
-                    'verification_status': 'verified',
-                    'is_organizer': True,
-                    'verified_at': user.verified_at,
-                    'can_create_events': True
+            try:
+                files = {
+                    'id_document': ('id_document.jpg', id_document_file, 'image/jpeg'),
+                    'selfie': ('selfie.jpg', selfie_file, 'image/jpeg')
                 }
-            }
-        else:
-            # Verification failed
-            user.verification_status = 'rejected'
-            user.verification_notes = 'Face does not match ID document. Please try again with clearer photos.'
+                
+                # Call face verification API
+                logger.info(f"Calling face verification API at {face_api_url}/verify-face")
+                response = requests.post(
+                    f"{face_api_url}/verify-face",
+                    files=files,
+                    timeout=30
+                )
+                
+            finally:
+                # Always close file handles
+                id_document_file.close()
+                selfie_file.close()
             
-            # 🔥 CRITICAL: Preserve organizer status if user was already verified
-            if not was_already_organizer:
-                user.is_organizer = False  # Only revoke if this was first-time verification
+            # Process API response
+            if response.status_code == 200:
+                result = response.json()
+                is_match = result.get('verified', False)
+                confidence = result.get('confidence', 0)
+                distance = result.get('distance', 1.0)
+                
+                if is_match:
+                    # Verification successful
+                    user.verification_status = 'verified'
+                    user.is_organizer = True
+                    user.verified_at = timezone.now()
+                    user.verification_notes = f'Face verification successful (confidence: {confidence:.2%}, distance: {distance:.3f})'
+                    user.save(update_fields=[
+                        'verification_status', 
+                        'is_organizer', 
+                        'verified_at', 
+                        'verification_notes'
+                    ])
+                    
+                    logger.info(f"User {user.email} verification SUCCESSFUL (confidence: {confidence}, distance: {distance})")
+                    
+                    return {
+                        'message': 'Verification successful! You can now create events.' if not was_already_organizer else 'Face verification successful!',
+                        'data': {
+                            'verification_status': 'verified',
+                            'is_organizer': True,
+                            'verified_at': user.verified_at,
+                            'can_create_events': True,
+                            'confidence': confidence,
+                            'match_distance': distance
+                        }
+                    }
+                else:
+                    # Verification failed - face doesn't match
+                    user.verification_status = 'rejected'
+                    user.verification_notes = f'Face does not match ID document (confidence: {confidence:.2%}, distance: {distance:.3f}). Please try again with clearer photos.'
+                    
+                    # Preserve organizer status if user was already verified
+                    if not was_already_organizer:
+                        user.is_organizer = False
+                    
+                    user.save(update_fields=['verification_status', 'verification_notes', 'is_organizer'])
+                    
+                    logger.warning(f"User {user.email} verification FAILED (confidence: {confidence}, distance: {distance})")
+                    
+                    return {
+                        'message': 'Verification failed. Please ensure your selfie clearly shows your face and matches your ID.',
+                        'data': {
+                            'verification_status': 'rejected',
+                            'is_organizer': user.is_organizer,
+                            'rejection_reason': user.verification_notes,
+                            'can_retry': True,
+                            'organizer_status_preserved': was_already_organizer,
+                            'confidence': confidence,
+                            'match_distance': distance
+                        }
+                    }
             
-            user.save(update_fields=['verification_status', 'verification_notes', 'is_organizer'])
+            elif response.status_code == 400:
+                # Bad request - likely image processing error
+                error_detail = response.json().get('detail', 'Invalid images provided')
+                logger.error(f"Face verification API error for user {user.email}: {error_detail}")
+                
+                user.verification_status = 'rejected'
+                user.verification_notes = f'Image processing error: {error_detail}'
+                user.save(update_fields=['verification_status', 'verification_notes'])
+                
+                return {
+                    'message': 'Image processing failed. Please ensure both images clearly show a face.',
+                    'data': {
+                        'verification_status': 'rejected',
+                        'is_organizer': user.is_organizer,
+                        'rejection_reason': error_detail,
+                        'can_retry': True
+                    }
+                }
             
-            logger.warning(f"User {user.email} verification FAILED (organizer status preserved: {was_already_organizer})")
+            else:
+                # API error
+                raise Exception(f"Face verification API returned status {response.status_code}: {response.text}")
+                
+        except requests.exceptions.Timeout:
+            logger.error(f"Face verification timeout for user {user.email}")
+            
+            user.verification_status = 'pending'
+            user.verification_notes = 'Verification service timeout. Please try again.'
+            user.save(update_fields=['verification_status', 'verification_notes'])
             
             return {
-                'message': 'Verification failed. Please ensure your selfie clearly shows your face and matches your ID.',
+                'message': 'Verification is taking longer than expected. Please try again in a few moments.',
                 'data': {
-                    'verification_status': 'rejected',
-                    'is_organizer': user.is_organizer,  # Will be True if was already organizer
-                    'rejection_reason': user.verification_notes,
+                    'verification_status': 'pending',
+                    'is_organizer': user.is_organizer,
                     'can_retry': True,
-                    'organizer_status_preserved': was_already_organizer
+                    'error': 'timeout'
                 }
             }
+            
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Face verification service unavailable for user {user.email}")
+            
+            user.verification_status = 'pending'
+            user.verification_notes = 'Verification service unavailable. Please try again later.'
+            user.save(update_fields=['verification_status', 'verification_notes'])
+            
+            return {
+                'message': 'Verification service is temporarily unavailable. Please try again in a few moments.',
+                'data': {
+                    'verification_status': 'pending',
+                    'is_organizer': user.is_organizer,
+                    'can_retry': True,
+                    'error': 'service_unavailable'
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Unexpected error during face verification for user {user.email}: {str(e)}")
+            
+            user.verification_status = 'pending'
+            user.verification_notes = f'Verification error: {str(e)}'
+            user.save(update_fields=['verification_status', 'verification_notes'])
+            
+            return {
+                'message': 'An unexpected error occurred during verification. Please try again.',
+                'data': {
+                    'verification_status': 'pending',
+                    'is_organizer': user.is_organizer,
+                    'can_retry': True,
+                    'error': 'unexpected_error'
+                }
+            }
+
 
 class UserVerificationStatusView(APIView):
     """
