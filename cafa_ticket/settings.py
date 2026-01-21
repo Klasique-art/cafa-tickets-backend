@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "djoser",
     "rest_framework_simplejwt",
     "corsheaders",
+        'django_celery_beat',
 ]
 
 MIDDLEWARE = [
@@ -306,3 +307,13 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 
 FACE_VERIFICATION_API_URL = config("FACE_VERIFICATION_API_URL", default="")
+
+
+# Celery Configuration
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://localhost:6379/0")
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'

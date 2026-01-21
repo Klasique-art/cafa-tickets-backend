@@ -1309,3 +1309,37 @@ class WithdrawalRequest(models.Model):
     def can_process(self):
         """Check if withdrawal can be processed"""
         return self.status == 'approved'
+    
+class EventNotification(models.Model):
+    """Track notifications sent to ticket holders"""
+    
+    NOTIFICATION_TYPES = [
+        ('7_days', '7 Days Before'),
+        ('3_days', '3 Days Before'),
+        ('1_day', '1 Day Before'),
+        ('12_hours', '12 Hours Before'),
+        ('1_hour', '1 Hour Before'),
+        ('starting', 'Event Starting Now'),
+        ('ended', 'Event Ended'),
+    ]
+    
+    NOTIFICATION_CHANNELS = [
+        ('email', 'Email'),
+        ('sms', 'SMS'),
+        ('in_app', 'In-App'),
+    ]
+    
+    event = models.ForeignKey('Event', on_delete=models.CASCADE, related_name='notifications')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_notifications')
+    notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
+    channel = models.CharField(max_length=10, choices=NOTIFICATION_CHANNELS)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    is_sent = models.BooleanField(default=False)
+    
+    class Meta:
+        unique_together = ['event', 'user', 'notification_type', 'channel']
+        ordering = ['-sent_at']
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.event.title} - {self.get_notification_type_display()}"
+    
