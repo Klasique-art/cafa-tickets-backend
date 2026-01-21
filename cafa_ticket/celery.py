@@ -19,4 +19,8 @@ app.conf.beat_schedule = {
         'task': 'tickets.tasks.check_and_send_event_notifications',
         'schedule': crontab(minute='*/30'),  # Run every 30 minutes
     },
+    'check-inactive-users': {
+        'task': 'tickets.tasks.check_and_send_inactive_user_emails',
+        'schedule': crontab(minute='*/30'),  # Run every 30 minutes
+    },
 }
