@@ -174,3 +174,100 @@ Cafa Tickets Team
         return f"✗ User {user_id} not found"
     except Exception as e:
         return f"✗ Error sending notification: {str(e)}"
+
+
+@shared_task
+def check_and_send_inactive_user_emails():
+    """
+    Check for users who haven't logged in for a specified period
+    and send re-engagement emails
+    """
+    from django.contrib.auth import get_user_model
+    
+    User = get_user_model()
+    
+    # Define inactivity period (30 minutes for testing)
+    inactivity_minutes = 30
+    cutoff_time = timezone.now() - timedelta(minutes=inactivity_minutes)
+    
+    # Get users who:
+    # 1. Haven't logged in for 30+ minutes
+    # 2. Are active accounts
+    # 3. Not staff or superuser
+    inactive_users = User.objects.filter(
+        last_login__lt=cutoff_time,
+        is_active=True,
+        is_staff=False,
+        is_superuser=False
+    )
+    
+    for user in inactive_users:
+        # Check if we already sent a re-engagement email recently (in last 24 hours for testing)
+        last_email_sent = check_last_reengagement_email(user)
+        
+        if not last_email_sent:
+            send_reengagement_email.delay(user.id)
+
+
+def check_last_reengagement_email(user):
+    """Check if we sent a re-engagement email in the last 24 hours"""
+    from .models import UserReengagementEmail
+    
+    one_day_ago = timezone.now() - timedelta(hours=24)
+    
+    recent_email = UserReengagementEmail.objects.filter(
+        user=user,
+        sent_at__gte=one_day_ago
+    ).exists()
+    
+    return recent_email
+
+
+@shared_task
+def send_reengagement_email(user_id):
+    """Send re-engagement email to inactive user"""
+    from django.contrib.auth import get_user_model
+    from .models import UserReengagementEmail
+    
+    User = get_user_model()
+    
+    try:
+        user = User.objects.get(id=user_id)
+        
+        subject = "We Miss You at Cafa Tickets! 🎉"
+        
+        message = f"""
+Hello {user.first_name or user.email},
+
+We noticed you haven't visited Cafa Tickets in a while, and we miss you!
+
+A lot has been happening:
+✨ New exciting events have been added
+🎫 Special promotions and discounts
+⚡ Improved booking experience
+
+Come back and check out what's new: https://cafatickets.com
+
+We'd love to see you again!
+
+Best regards,
+The Cafa Tickets Team
+        """
+        
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+        
+        # Record that we sent this email
+        UserReengagementEmail.objects.create(user=user)
+        
+        return f"✓ Re-engagement email sent to {user.email}"
+        
+    except User.DoesNotExist:
+        return f"✗ User {user_id} not found"
+    except Exception as e:
+        return f"✗ Error sending email: {str(e)}"

@@ -390,3 +390,29 @@ class PaymentProfile(models.Model):
                 details["account_number"] = "******" + account[-4:]
 
         return details
+
+class UserReengagementEmail(models.Model):
+    """Track re-engagement emails sent to inactive users"""
+    
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='reengagement_emails',
+        help_text="User who received the re-engagement email"
+    )
+    sent_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="When the email was sent"
+    )
+    
+    class Meta:
+        ordering = ['-sent_at']
+        verbose_name = 'User Re-engagement Email'
+        verbose_name_plural = 'User Re-engagement Emails'
+        indexes = [
+            models.Index(fields=['user'], name='idx_reengagement_user'),
+            models.Index(fields=['sent_at'], name='idx_reengagement_sent'),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} - Re-engagement email sent at {self.sent_at}"
