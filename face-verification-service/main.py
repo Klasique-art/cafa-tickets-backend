@@ -85,13 +85,14 @@ def validate_image(file: UploadFile) -> bytes:
     return contents
 
 
-def extract_face_encoding(image_bytes: bytes, image_name: str = "image"):
+def extract_face_encoding(image_bytes: bytes, image_name: str = "image", is_id_document: bool = False):
     """
     Extract face encoding from image
     
     Args:
         image_bytes: Image file contents
         image_name: Name for logging purposes
+        is_id_document: If True, will select largest face when multiple detected (for ID cards with duplicate photos)
         
     Returns:
         tuple: (encoding array, error message)
@@ -108,10 +109,38 @@ def extract_face_encoding(image_bytes: bytes, image_name: str = "image"):
             return None, "No face detected in image. Please ensure your face is clearly visible."
         
         if len(face_locations) > 1:
-            logger.warning(f"Multiple faces detected in {image_name}: {len(face_locations)} faces")
-            return None, f"Multiple faces detected ({len(face_locations)}). Please use an image with only one face."
+            if is_id_document:
+                # For ID documents, select the largest face (main photo)
+                # Calculate face size (area) for each detected face
+                face_sizes = []
+                for face_location in face_locations:
+                    top, right, bottom, left = face_location
+                    width = right - left
+                    height = bottom - top
+                    area = width * height
+                    face_sizes.append(area)
+                
+                # Get index of largest face
+                largest_face_idx = face_sizes.index(max(face_sizes))
+                largest_face = face_locations[largest_face_idx]
+                
+                logger.info(f"Multiple faces detected in {image_name} ({len(face_locations)} faces). Selected largest face for ID verification.")
+                
+                # Get encoding for only the largest face
+                encodings = face_recognition.face_encodings(image, [largest_face])
+                
+                if len(encodings) == 0:
+                    logger.error(f"Could not encode largest face in {image_name}")
+                    return None, "Could not process face. Please use a clearer photo."
+                
+                logger.info(f"Successfully extracted face encoding from largest face in {image_name}")
+                return encodings[0], None
+            else:
+                # For selfies, we want exactly one face
+                logger.warning(f"Multiple faces detected in {image_name}: {len(face_locations)} faces")
+                return None, f"Multiple faces detected ({len(face_locations)}). Please use an image with only one face."
         
-        # Get face encoding
+        # Single face detected - normal processing
         encodings = face_recognition.face_encodings(image, face_locations)
         
         if len(encodings) == 0:
@@ -173,8 +202,8 @@ async def verify_face(
     
     **Process:**
     1. Validates both images
-    2. Detects and extracts face from ID document
-    3. Detects and extracts face from selfie
+    2. Detects and extracts face from ID document (selects largest if multiple)
+    3. Detects and extracts face from selfie (must be single face)
     4. Compares the two faces
     5. Returns match result with confidence score
     
@@ -187,7 +216,7 @@ async def verify_face(
     - `message`: Human-readable result message
     
     **Raises:**
-    - 400: Invalid image, no face detected, or multiple faces
+    - 400: Invalid image, no face detected, or multiple faces in selfie
     - 500: Internal processing error
     """
     logger.info(f"Verification request - ID: {id_document.filename}, Selfie: {selfie.filename}")
@@ -198,9 +227,9 @@ async def verify_face(
         id_bytes = validate_image(id_document)
         selfie_bytes = validate_image(selfie)
         
-        # Step 2: Extract face from ID document
+        # Step 2: Extract face from ID document (allow multiple faces, select largest)
         logger.info("Extracting face from ID document...")
-        id_encoding, id_error = extract_face_encoding(id_bytes, "ID document")
+        id_encoding, id_error = extract_face_encoding(id_bytes, "ID document", is_id_document=True)
         if id_error:
             logger.warning(f"ID document processing failed: {id_error}")
             raise HTTPException(
@@ -212,9 +241,9 @@ async def verify_face(
                 }
             )
         
-        # Step 3: Extract face from selfie
+        # Step 3: Extract face from selfie (require single face)
         logger.info("Extracting face from selfie...")
-        selfie_encoding, selfie_error = extract_face_encoding(selfie_bytes, "selfie")
+        selfie_encoding, selfie_error = extract_face_encoding(selfie_bytes, "selfie", is_id_document=False)
         if selfie_error:
             logger.warning(f"Selfie processing failed: {selfie_error}")
             raise HTTPException(
