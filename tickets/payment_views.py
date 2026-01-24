@@ -449,7 +449,7 @@ def initialize_paystack_payment(email, amount, reference, metadata=None):
         "amount": amount_in_pesewas,
         "reference": reference,
         "currency": "GHS",
-        "callback_url": "http://localhost:3000/payment-results",
+        "callback_url": "https://cafatickets.com/payment-results",
         "metadata": metadata or {}
     }
     

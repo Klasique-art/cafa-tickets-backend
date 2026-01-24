@@ -1,7 +1,3 @@
-"""
-Tickets App URL Configuration
-Matches the API specification from documentation
-"""
 from django.urls import path
 
 # Event Views
@@ -55,6 +51,12 @@ from .contact_views import (
 
 # Payment Views
 from .payment_views import initiate_payment, verify_payment
+from .bot_views import (
+    BotAssistantView,
+    BotAssistantStreamView,
+    BotConversationView,
+)
+
 
 urlpatterns = [
     # ============================================================================
@@ -135,4 +137,7 @@ urlpatterns = [
     path('contact/', ContactMessageView.as_view(), name='contact-submit'),
     path('newsletter/subscribe/', NewsletterSubscribeView.as_view(), name='newsletter-subscribe'),
     path('newsletter/unsubscribe/', NewsletterUnsubscribeView.as_view(), name='newsletter-unsubscribe'),
+        path('bot/chat/', BotAssistantView.as_view(), name='bot-chat'),
+    path('bot/stream/', BotAssistantStreamView.as_view(), name='bot-stream'),
+    path('bot/conversation/', BotConversationView.as_view(), name='bot-conversation'),
 ]
