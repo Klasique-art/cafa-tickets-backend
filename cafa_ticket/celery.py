@@ -17,10 +17,10 @@ app.autodiscover_tasks()
 app.conf.beat_schedule = {
     'check-upcoming-events': {
         'task': 'tickets.tasks.check_and_send_event_notifications',
-        'schedule': crontab(minute='*/30'),  # Run every 30 minutes
+        'schedule': crontab(minute='*/2'),  # Run every 2 minutes
     },
     'check-inactive-users': {
         'task': 'tickets.tasks.check_and_send_inactive_user_emails',
-        'schedule': crontab(minute='*/30'),  # Run every 30 minutes
+        'schedule': crontab(minute='*/5'),
     },
 }
