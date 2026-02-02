@@ -1,3 +1,7 @@
+"""
+Tickets App URL Configuration
+Matches the API specification from documentation
+"""
 from django.urls import path
 
 # Event Views
@@ -50,13 +54,7 @@ from .contact_views import (
 )
 
 # Payment Views
-from .payment_views import initiate_payment, verify_payment
-from .bot_views import (
-    BotAssistantView,
-    BotAssistantStreamView,
-    BotConversationView,
-)
-
+from .payment_views import initiate_payment, verify_payment, mobile_payment_callback
 
 urlpatterns = [
     # ============================================================================
@@ -119,6 +117,7 @@ urlpatterns = [
 
     path('payments/initiate/', initiate_payment, name='initiate-payment'),
     path('payments/verify/<str:reference>/', verify_payment, name='verify-payment'),
+    path('payments/mobile-callback', mobile_payment_callback, name='mobile_payment_callback'),  # ✅ Add this
     
     # Payment History (list all payments)
     path('payments/', PaymentHistoryView.as_view(), name='payment-history'),
@@ -137,7 +136,4 @@ urlpatterns = [
     path('contact/', ContactMessageView.as_view(), name='contact-submit'),
     path('newsletter/subscribe/', NewsletterSubscribeView.as_view(), name='newsletter-subscribe'),
     path('newsletter/unsubscribe/', NewsletterUnsubscribeView.as_view(), name='newsletter-unsubscribe'),
-        path('bot/chat/', BotAssistantView.as_view(), name='bot-chat'),
-    path('bot/stream/', BotAssistantStreamView.as_view(), name='bot-stream'),
-    path('bot/conversation/', BotConversationView.as_view(), name='bot-conversation'),
 ]

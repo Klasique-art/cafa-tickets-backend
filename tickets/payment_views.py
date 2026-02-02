@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
+from django.shortcuts import redirect
 from decimal import Decimal
 import requests
 import uuid
@@ -40,6 +41,7 @@ def initiate_payment(request):
         buyer_name = request.data.get('buyer_name')
         buyer_email = request.data.get('buyer_email')
         buyer_phone = request.data.get('buyer_phone')
+        callback_url = request.data.get('callback_url')
         
         # Validate required fields
         if not all([event_slug, ticket_type_id, buyer_name, buyer_email, buyer_phone]):
@@ -156,7 +158,8 @@ def initiate_payment(request):
                     'quantity': quantity,
                     'buyer_name': buyer_name,
                     'buyer_phone': buyer_phone
-                }
+                },
+                callback_url=callback_url
             )
             
             if not paystack_response['success']:
@@ -420,7 +423,7 @@ def verify_payment(request, reference):
         )
     
 
-def initialize_paystack_payment(email, amount, reference, metadata=None):
+def initialize_paystack_payment(email, amount, reference, metadata=None, callback_url=None):
     """
     Initialize payment with Paystack
     
@@ -429,6 +432,7 @@ def initialize_paystack_payment(email, amount, reference, metadata=None):
         amount: Amount in GHS
         reference: Unique payment reference
         metadata: Additional data (dict)
+        callback_url: Optional callback URL (defaults to frontend)
     
     Returns:
         dict: Response from Paystack
@@ -436,6 +440,10 @@ def initialize_paystack_payment(email, amount, reference, metadata=None):
     # Convert amount to kobo (Paystack uses smallest currency unit)
     # For GHS: 1 GHS = 100 pesewas
     amount_in_pesewas = int(amount * 100)
+
+    # Use provided callback or default to frontend
+    if callback_url is None:
+        callback_url = f"{settings.FRONTEND_URL}/payment-results"
     
     url = "https://api.paystack.co/transaction/initialize"
     
@@ -449,7 +457,7 @@ def initialize_paystack_payment(email, amount, reference, metadata=None):
         "amount": amount_in_pesewas,
         "reference": reference,
         "currency": "GHS",
-        "callback_url": "https://cafatickets.com/payment-results",
+        "callback_url": callback_url,
         "metadata": metadata or {}
     }
     
@@ -522,3 +530,23 @@ def verify_paystack_payment(reference):
             'success': False,
             'message': f'Error: {str(e)}'
         }
+    
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def mobile_payment_callback(request):
+    """
+    Mobile payment callback - redirects to app deep link
+    
+    URL: /api/payments/mobile-callback
+    Query params: reference or trxref (from Paystack)
+    """
+    # Paystack sends reference as 'reference' or 'trxref'
+    reference = request.GET.get('reference') or request.GET.get('trxref')
+    
+    if not reference:
+        # If no reference, redirect to app with error
+        return redirect('cafatickets://payment-result?error=no_reference')
+    
+    # Redirect to mobile app with payment reference
+    return redirect(f'cafatickets://payment-result?reference={reference}')
+
