@@ -765,6 +765,7 @@ class MyEventDetailView(generics.RetrieveAPIView):
 
         return Response(response_data)
 
+
 class UpdateTicketTypeView(generics.UpdateAPIView):
     """
     PATCH /api/v1/events/{slug_or_id}/tickets/{ticket_id}/
@@ -810,6 +811,7 @@ class UpdateTicketTypeView(generics.UpdateAPIView):
             'message': 'Ticket type updated successfully',
             'ticket_type': TicketTypeCreateSerializer(ticket_type).data
         }, status=status.HTTP_200_OK)
+
 
 class DeleteTicketTypeView(generics.DestroyAPIView):
     """
@@ -860,10 +862,12 @@ class DeleteTicketTypeView(generics.DestroyAPIView):
         return Response({
             'message': 'Ticket type deleted successfully'
         }, status=status.HTTP_200_OK)
+
     
 class DeleteEventView(generics.DestroyAPIView):
     """
     DELETE /api/v1/events/{slug_or_id}/delete/
+    Delete an event (only allowed if no tickets have been sold)
     """
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'slug_or_id'
@@ -893,25 +897,22 @@ class DeleteEventView(generics.DestroyAPIView):
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         
-        # Check if event has already started or ended
-        if instance.status in ['ongoing', 'past']:
-            return Response({
-                'error': 'Cannot delete event',
-                'message': 'Cannot delete event that has already started or ended. Please contact support.'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if any tickets have been sold
+        # Only check if any tickets have been sold
+        # Allow deletion of past/ongoing events if no tickets sold
         total_sold = sum(ticket.tickets_sold for ticket in instance.ticket_types.all())
         if total_sold > 0:
             return Response({
+                'success': False,
                 'error': 'Cannot delete event',
-                'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). Please contact support for assistance.',
-                'support_email': 'support@cafaticket.com'
+                'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). This affects attendees and revenue records.',
+                'tickets_sold': total_sold,
+                'suggestion': 'Consider unpublishing the event instead of deleting it.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Delete the event
+        # Delete the event (no tickets sold, safe to delete)
         instance.delete()
 
         return Response({
+            'success': True,
             'message': 'Event deleted successfully'
         }, status=status.HTTP_200_OK)

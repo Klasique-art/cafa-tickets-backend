@@ -573,7 +573,8 @@ class Purchase(models.Model):
             ticket_sales_amount=self.subtotal,
             platform_fee=platform_fee,
             organizer_earnings=organizer_earnings,
-            status='pending'  # Will become 'available' after 7 days
+            status='available',  # ✅ Changed from 'pending' to 'available'
+            available_at=timezone.now()
         )
 
     @property
@@ -988,6 +989,7 @@ class EventReview(models.Model):
     def __str__(self):
         return f"{self.user.email} - {self.event.title} ({self.rating}/5)"
 
+
 class ContactMessage(models.Model):
     """Contact form submissions"""
     name = models.CharField(max_length=255)
@@ -1059,6 +1061,7 @@ class NewsletterSubscription(models.Model):
     
     def __str__(self):
         return self.email
+
 
 class OrganizerRevenue(models.Model):
     """Track revenue earned by event organizers"""
@@ -1309,7 +1312,8 @@ class WithdrawalRequest(models.Model):
     def can_process(self):
         """Check if withdrawal can be processed"""
         return self.status == 'approved'
-    
+
+
 class EventNotification(models.Model):
     """Track notifications sent to ticket holders"""
     
@@ -1342,4 +1346,3 @@ class EventNotification(models.Model):
     
     def __str__(self):
         return f"{self.user.email} - {self.event.title} - {self.get_notification_type_display()}"
-    
