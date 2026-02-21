@@ -1,552 +1,617 @@
 """
-Payment views for Paystack integration
+Payment Profile Views
+Handles payment profile CRUD operations and verification
 """
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import status, generics, permissions
 from rest_framework.response import Response
-from django.conf import settings
+from rest_framework.views import APIView
 from django.utils import timezone
-from django.db import transaction
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404
+from datetime import timedelta
+
+from .models import PaymentProfile
+from .payment_serializers import (
+    PaymentProfileSerializer,
+    PaymentProfileCreateSerializer,
+    PaymentProfileUpdateSerializer,
+    VerificationStatusSerializer,
+    RetryVerificationSerializer,
+)
+
 from decimal import Decimal
-import requests
-import uuid
+from django.db.models import Sum
+from tickets.models import OrganizerRevenue, WithdrawalRequest
+from .paystack_service import PaystackTransferService
 
-from .models import Purchase, Payment, Ticket, TicketType, Event
-from .serializers import TicketSerializer
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def initiate_payment(request):
+class PaymentProfileListCreateView(generics.ListCreateAPIView):
     """
-    Initiate payment with Paystack
-    
-    Request body:
-    {
-        "event_slug": "my-event",
-        "ticket_type_id": 1,
-        "quantity": 2,
-        "buyer_name": "John Doe",
-        "buyer_email": "john@example.com",
-        "buyer_phone": "+233241234567"
-    }
+    GET /api/v1/users/payment-profile/
+    POST /api/v1/users/payment-profile/
     """
-    try:
-        # Extract request data
-        event_slug = request.data.get('event_slug')
-        ticket_type_id = request.data.get('ticket_type_id')
-        quantity = request.data.get('quantity', 1)
-        buyer_name = request.data.get('buyer_name')
-        buyer_email = request.data.get('buyer_email')
-        buyer_phone = request.data.get('buyer_phone')
-        callback_url = request.data.get('callback_url')
-        
-        # Validate required fields
-        if not all([event_slug, ticket_type_id, buyer_name, buyer_email, buyer_phone]):
-            return Response(
-                {'error': 'Missing required fields'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate quantity
-        try:
-            quantity = int(quantity)
-            if quantity < 1:
-                raise ValueError
-        except (ValueError, TypeError):
-            return Response(
-                {'error': 'Invalid quantity. Must be a positive integer.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Get event and ticket type
-        try:
-            event = Event.objects.get(slug=event_slug, is_published=True)
-        except Event.DoesNotExist:
-            return Response(
-                {'error': 'Event not found or not available'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        try:
-            ticket_type = TicketType.objects.get(id=ticket_type_id, event=event)
-        except TicketType.DoesNotExist:
-            return Response(
-                {'error': 'Ticket type not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Check if ticket type is available
-        if not ticket_type.is_available:
-            return Response(
-                {'error': 'This ticket type is not available for sale'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Check ticket availability
-        available = ticket_type.tickets_remaining
-        if available < quantity:
-            return Response(
-                {
-                    'error': f'Only {available} ticket(s) available. You requested {quantity}.',
-                    'available_quantity': available
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Check min/max purchase limits
-        if quantity < ticket_type.min_purchase:
-            return Response(
-                {
-                    'error': f'Minimum purchase is {ticket_type.min_purchase} ticket(s)',
-                    'min_quantity': ticket_type.min_purchase
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
+    permission_classes = [permissions.IsAuthenticated]
 
-        if quantity > ticket_type.max_purchase:
-            return Response(
-                {
-                    'error': f'Maximum purchase is {ticket_type.max_purchase} ticket(s)',
-                    'max_quantity': ticket_type.max_purchase
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Calculate pricing
-        ticket_price = ticket_type.price
-        subtotal = ticket_price * quantity
-        service_fee = subtotal * Decimal('0.05')  # 5% service fee
-        total = subtotal + service_fee
-        
-        # Create purchase record with transaction
-        with transaction.atomic():
-            # Reserve tickets by incrementing tickets_sold
-            ticket_type.tickets_sold += quantity
-            ticket_type.save()
-            
-            # Create purchase
-            purchase = Purchase.objects.create(
-                user=request.user,
-                event=event,
-                ticket_type=ticket_type,
-                quantity=quantity,
-                buyer_name=buyer_name,
-                buyer_email=buyer_email,
-                buyer_phone=buyer_phone,
-                ticket_price=ticket_price,
-                subtotal=subtotal,
-                service_fee=service_fee,
-                total=total,
-                status='pending'
-            )
-            
-            # Generate unique reference for Paystack
-            payment_reference = f"CAFA-{purchase.purchase_id}-{uuid.uuid4().hex[:6].upper()}"
-            
-            # Initialize payment with Paystack
-            paystack_response = initialize_paystack_payment(
-                email=buyer_email,
-                amount=total,
-                reference=payment_reference,
-                metadata={
-                    'purchase_id': purchase.purchase_id,
-                    'event_title': event.title,
-                    'ticket_type': ticket_type.name,
-                    'quantity': quantity,
-                    'buyer_name': buyer_name,
-                    'buyer_phone': buyer_phone
-                },
-                callback_url=callback_url
-            )
-            
-            if not paystack_response['success']:
-                # Rollback ticket reservation
-                ticket_type.tickets_sold -= quantity
-                ticket_type.save()
-                purchase.delete()
-                
-                return Response(
-                    {
-                        'error': 'Failed to initialize payment',
-                        'details': paystack_response.get('message', 'Unknown error')
-                    },
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            # Create payment record
-            payment = Payment.objects.create(
-                purchase=purchase,
-                amount=total,
-                currency='GHS',
-                provider='paystack',
-                reference=payment_reference,
-                payment_url=paystack_response['data']['authorization_url'],
-                provider_response=paystack_response['data'],
-                status='pending'
-            )
-        
-        # Return payment details
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return PaymentProfileCreateSerializer
+        return PaymentProfileSerializer
+
+    def get_queryset(self):
+        return PaymentProfile.objects.filter(user=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        """List all payment profiles for the user"""
+        queryset = self.get_queryset()
+        serializer = PaymentProfileSerializer(queryset, many=True)
+
         return Response({
-            'success': True,
-            'purchase_id': purchase.purchase_id,
-            'payment_reference': payment_reference,
-            'authorization_url': payment.payment_url,
-            'amount': float(total),
-            'currency': 'GHS',
-            'expires_at': purchase.reservation_expires_at.isoformat()
-        }, status=status.HTTP_201_CREATED)
+            'count': queryset.count(),
+            'results': serializer.data
+        })
+
+    def create(self, request, *args, **kwargs):
+        """Create a new payment profile"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payment_profile = serializer.save()
+
+        # 🔥 AUTOMATICALLY VERIFY BANK ACCOUNT WITH RETRY LOGIC
+        max_retries = 5
+        retry_count = 0
+        verification_result = None
         
-    except Exception as e:
-        return Response(
-            {'error': f'An error occurred: {str(e)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        while retry_count < max_retries:
+            verification_result = PaystackTransferService.verify_bank_account(
+                payment_profile, 
+                is_retry=(retry_count > 0)
+            )
+            
+            if verification_result['success']:
+                # Verification successful
+                break
+            
+            if not verification_result.get('should_retry', False):
+                # No more retries needed (either succeeded or max attempts reached)
+                break
+            
+            retry_count += 1
+            
+            # Optional: Add a small delay between retries (0.5 seconds)
+            import time
+            time.sleep(0.5)
+
+        # Return response with verification info
+        response_serializer = PaymentProfileSerializer(payment_profile)
+
+        if verification_result and verification_result['success']:
+            return Response({
+                'success': True,
+                'message': 'Payment profile created and verified successfully.',
+                'data': {
+                    'payment_profile': response_serializer.data,
+                    'verification': {
+                        'status': 'verified',
+                        'attempts': payment_profile.verification_attempts,
+                        'resolved_name': verification_result.get('resolved_name')
+                    }
+                }
+            }, status=status.HTTP_201_CREATED)
+        else:
+            return Response({
+                'success': False,
+                'message': f'Payment profile created but verification failed after {payment_profile.verification_attempts} attempts.',
+                'data': {
+                    'payment_profile': response_serializer.data,
+                    'verification': {
+                        'status': payment_profile.status,
+                        'attempts': payment_profile.verification_attempts,
+                        'failure_reason': payment_profile.failure_reason
+                    }
+                }
+            }, status=status.HTTP_201_CREATED)
+
+
+class PaymentProfileDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/v1/users/payment-profile/{id}/
+    PATCH /api/v1/users/payment-profile/{id}/
+    DELETE /api/v1/users/payment-profile/{id}/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method == 'PATCH':
+            return PaymentProfileUpdateSerializer
+        return PaymentProfileSerializer
+
+    def get_queryset(self):
+        return PaymentProfile.objects.filter(user=self.request.user)
+
+    def get_object(self):
+        """Get payment profile by ID"""
+        profile_id = self.kwargs.get('pk')
+        return get_object_or_404(
+            PaymentProfile,
+            id=profile_id,
+            user=self.request.user
         )
 
+    def update(self, request, *args, **kwargs):
+        """Update payment profile"""
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        payment_profile = serializer.save()
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def verify_payment(request, reference):
+        response_serializer = PaymentProfileSerializer(payment_profile)
+
+        return Response({
+            'message': 'Payment profile updated successfully',
+            'payment_profile': response_serializer.data
+        })
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete payment profile"""
+        instance = self.get_object()
+
+        # Check if profile is default
+        if instance.is_default:
+            return Response({
+                'error': 'Cannot delete default profile',
+                'message': 'Cannot delete your default payment profile. Please set another profile as default first.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if profile is used by active events
+        active_events = instance.events.filter(
+            is_published=True,
+            start_date__gte=timezone.now().date()
+        )
+
+        if active_events.exists():
+            return Response({
+                'error': 'Cannot delete payment profile',
+                'message': f'This payment profile is currently used by {active_events.count()} active events. Please update those events first.',
+                'active_events': [
+                    {'id': event.id, 'title': event.title}
+                    for event in active_events
+                ]
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SetDefaultPaymentProfileView(APIView):
     """
-    Verify payment with Paystack
-    
-    URL: /payments/verify/{reference}/
+    POST /api/v1/users/payment-profile/{id}/set-default/
     """
-    import traceback
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        """Set payment profile as default"""
+        payment_profile = get_object_or_404(
+            PaymentProfile,
+            id=pk,
+            user=request.user
+        )
+
+        # Set as default
+        payment_profile.is_default = True
+        payment_profile.save()
+
+        return Response({
+            'message': 'Default payment profile updated successfully',
+            'payment_profile': {
+                'id': str(payment_profile.id),
+                'name': payment_profile.name,
+                'is_default': payment_profile.is_default
+            }
+        })
+
+
+class VerificationStatusView(APIView):
+    """
+    GET /api/v1/users/payment-profile/{id}/verification-status/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        """Check verification status of payment profile"""
+        payment_profile = get_object_or_404(
+            PaymentProfile,
+            id=pk,
+            user=request.user
+        )
+
+        # Prepare response based on status
+        if payment_profile.status == 'verified':
+            response_data = {
+                'status': 'verified',
+                'is_verified': True,
+                'verified_at': payment_profile.verified_at,
+                'message': 'Payment profile verified successfully'
+            }
+        elif payment_profile.status == 'pending_verification':
+            response_data = {
+                'status': 'pending_verification',
+                'is_verified': False,
+                'message': 'Verification in progress. This usually takes 1-2 minutes.',
+                'verification_initiated_at': payment_profile.verification_initiated_at
+            }
+        else:  # verification_failed
+            response_data = {
+                'status': 'verification_failed',
+                'is_verified': False,
+                'message': 'Verification failed. Please check your account details and try again.',
+                'failure_reason': payment_profile.failure_reason or 'Unknown error',
+                'can_retry': True
+            }
+
+        serializer = VerificationStatusSerializer(response_data)
+        return Response(serializer.data)
+
+
+class RetryVerificationView(APIView):
+    """
+    POST /api/v1/users/payment-profile/{id}/retry-verification/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        """Retry verification for a failed payment profile"""
+        payment_profile = get_object_or_404(
+            PaymentProfile,
+            id=pk,
+            user=request.user
+        )
+
+        # Validate request
+        serializer = RetryVerificationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Check if already verified
+        if payment_profile.status == 'verified':
+            return Response({
+                'error': 'Already verified',
+                'message': 'This payment profile has already been verified.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if verification is in progress
+        if payment_profile.status == 'pending_verification':
+            return Response({
+                'error': 'Verification in progress',
+                'message': 'Please wait for the current verification attempt to complete before retrying.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check rate limiting (max 3 attempts per hour)
+        if payment_profile.last_verification_attempt:
+            time_since_last_attempt = timezone.now() - payment_profile.last_verification_attempt
+            if time_since_last_attempt < timedelta(hours=1):
+                attempts_in_last_hour = payment_profile.verification_attempts
+                if attempts_in_last_hour >= 3:
+                    retry_after = int((timedelta(hours=1) - time_since_last_attempt).total_seconds())
+                    return Response({
+                        'error': 'Rate limit exceeded',
+                        'message': 'Too many verification attempts. Please try again in 1 hour.',
+                        'retry_after': retry_after
+                    }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Reset verification status
+        payment_profile.status = 'pending_verification'
+        payment_profile.verification_initiated_at = timezone.now()
+        payment_profile.last_verification_attempt = timezone.now()
+        payment_profile.verification_attempts += 1
+        payment_profile.failure_reason = ''
+        payment_profile.save()
+
+        # TODO: Integrate with Paystack to deduct 1 GHS for verification
+
+        response_serializer = PaymentProfileSerializer(payment_profile)
+
+        return Response({
+            'message': 'Verification retry initiated. Another 1 GHS will be deducted from your account.',
+            'payment_profile': response_serializer.data
+        })
+
+class CreateWithdrawalRequestView(APIView):
+    """
+    POST /api/v1/users/withdrawal/request/
+    Create a new withdrawal request and automatically initiate transfer
+    """
+    permission_classes = [permissions.IsAuthenticated]
     
-    try:
-        print(f"\n{'='*50}")
-        print(f"VERIFY PAYMENT - Reference: {reference}")
-        print(f"{'='*50}\n")
+    def post(self, request):
+        user = request.user
+        requested_amount = request.data.get('amount')
+        payment_profile_id = request.data.get('payment_profile_id')
         
-        # Get payment record
+        # Validate amount
         try:
-            payment = Payment.objects.select_related(
-                'purchase',
-                'purchase__event',
-                'purchase__ticket_type',
-                'purchase__user'
-            ).get(reference=reference)
-            print(f"✅ Payment found: {payment.payment_id}")
-        except Payment.DoesNotExist:
-            print(f"❌ Payment not found for reference: {reference}")
-            return Response(
-                {'error': 'Payment not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            requested_amount = Decimal(str(requested_amount))
+            if requested_amount <= 0:
+                raise ValueError()
+        except (ValueError, TypeError, decimal.InvalidOperation):
+            return Response({
+                'success': False,
+                'message': 'Please enter a valid withdrawal amount'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
-        # If already completed, return success
-        if payment.status == 'completed':
-            print("⚠️ Payment already completed, returning existing tickets")
-            try:
-                tickets = Ticket.objects.filter(purchase=payment.purchase)
-                print(f"Found {tickets.count()} tickets")
-                
-                print("Serializing tickets...")
-                serializer = TicketSerializer(tickets, many=True, context={'request': request})
-                print("✅ Tickets serialized successfully")
-                
+        # Minimum withdrawal amount
+        if requested_amount < Decimal('10.00'):
+            return Response({
+                'success': False,
+                'message': 'Minimum withdrawal amount is GHS 10.00'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check available balance
+        available_balance = OrganizerRevenue.objects.filter(
+            organizer=user,
+            status='available',
+            is_withdrawn=False
+        ).aggregate(total=Sum('organizer_earnings'))['total'] or Decimal('0')
+        
+        if requested_amount > available_balance:
+            return Response({
+                'success': False,
+                'message': f'Insufficient balance. Available: GHS {available_balance}',
+                'data': {
+                    'requested_amount': str(requested_amount),
+                    'available_balance': str(available_balance)
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check for pending withdrawals
+        pending_withdrawals = WithdrawalRequest.objects.filter(
+            organizer=user,
+            status__in=['pending', 'processing']  # ← Remove 'approved'
+        )
+        
+        if pending_withdrawals.exists():
+            pending = pending_withdrawals.first()
+            return Response({
+                'success': False,
+                'message': 'You already have a pending withdrawal request',
+                'data': {
+                    'pending_withdrawal_id': pending.withdrawal_id,
+                    'pending_amount': str(pending.requested_amount),
+                    'status': pending.status
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get payment profile
+        if not payment_profile_id:
+            # Try to get default payment profile
+            payment_profile = PaymentProfile.objects.filter(
+                user=user,
+                is_default=True
+            ).first()
+            
+            # Fallback: If no default, but user has exactly one profile, use that
+            if not payment_profile:
+                user_profiles = PaymentProfile.objects.filter(user=user)
+                if user_profiles.count() == 1:
+                    payment_profile = user_profiles.first()
+                elif user_profiles.count() > 1:
+                    return Response({
+                        'success': False,
+                        'message': 'Please select a payment method for withdrawal.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not payment_profile:
                 return Response({
-                    'success': True,
-                    'status': 'completed',
-                    'message': 'Payment already verified',
-                    'purchase_id': payment.purchase.purchase_id,
-                    'amount': float(payment.amount),
-                    'tickets': serializer.data
-                }, status=status.HTTP_200_OK)
-            except Exception as e:
-                print(f"❌ ERROR serializing tickets: {str(e)}")
-                print(traceback.format_exc())
-                raise
-        
-        # Verify with Paystack
-        print("🔍 Verifying with Paystack API...")
-        verification_result = verify_paystack_payment(reference)
-        
-        if not verification_result['success']:
-            print(f"❌ Paystack verification failed: {verification_result.get('message')}")
-            # Update payment as failed
-            payment.status = 'failed'
-            payment.failure_reason = verification_result.get('message', 'Verification failed')
-            payment.failed_at = timezone.now()
-            payment.save()
-            
-            # Update purchase status
-            payment.purchase.status = 'failed'
-            payment.purchase.save()
-            
-            # Release reserved tickets
-            ticket_type = payment.purchase.ticket_type
-            ticket_type.tickets_sold -= payment.purchase.quantity
-            ticket_type.save()
-            
-            return Response({
-                'success': False,
-                'status': 'failed',
-                'message': verification_result.get('message', 'Payment verification failed')
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if payment was successful
-        paystack_data = verification_result['data']
-        print(f"Paystack status: {paystack_data.get('status')}")
-        
-        if paystack_data['status'] != 'success':
-            print(f"⚠️ Payment not successful: {paystack_data['status']}")
-            payment.status = 'failed'
-            payment.failure_reason = f"Payment status: {paystack_data['status']}"
-            payment.failed_at = timezone.now()
-            payment.provider_response = paystack_data
-            payment.save()
-            
-            payment.purchase.status = 'failed'
-            payment.purchase.save()
-            
-            # Release reserved tickets
-            ticket_type = payment.purchase.ticket_type
-            ticket_type.tickets_sold -= payment.purchase.quantity
-            ticket_type.save()
-            
-            return Response({
-                'success': False,
-                'status': 'failed',
-                'message': 'Payment was not successful'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Payment successful - complete the purchase
-        print("✅ Payment successful, creating tickets...")
-        with transaction.atomic():
-            # Update payment record
-            payment.status = 'completed'
-            payment.completed_at = timezone.now()
-            payment.provider_response = paystack_data
-            payment.payment_method = paystack_data.get('channel', 'card')
-            payment.save()
-            print("✅ Payment record updated")
-            
-            # Update purchase record
-            purchase = payment.purchase
-            purchase.status = 'completed'
-            purchase.completed_at = timezone.now()
-            purchase.save()
-            print("✅ Purchase record updated")
-            
-            # Generate tickets with QR codes
-            tickets = []
-            print(f"Generating {purchase.quantity} tickets...")
-            for i in range(purchase.quantity):
-                print(f"  Creating ticket {i+1}/{purchase.quantity}...")
-                ticket = Ticket.objects.create(
-                    purchase=purchase,
-                    event=purchase.event,
-                    ticket_type=purchase.ticket_type,
-                    attendee_name=purchase.buyer_name,
-                    attendee_email=purchase.buyer_email,
-                    attendee_phone=purchase.buyer_phone,
-                    price=purchase.ticket_price,
-                    status='paid'
-                )
-                print(f"  ✅ Ticket created: {ticket.ticket_id}")
-                
-                # Generate QR code
-                print(f"  Generating QR code...")
-                ticket.generate_qr_code()
-                print(f"  ✅ QR code generated")
-                tickets.append(ticket)
-            
-            print(f"✅ All {len(tickets)} tickets created successfully")
-            
-            # Create revenue record for organizer
-            print("Creating revenue record...")
-            from decimal import Decimal
-            platform_commission_rate = Decimal('0.05')  # 5%
-            platform_fee = purchase.subtotal * platform_commission_rate
-            organizer_earnings = purchase.subtotal - platform_fee
-            
-            from .models import OrganizerRevenue
-            OrganizerRevenue.objects.create(
-                organizer=purchase.event.organizer,
-                event=purchase.event,
-                purchase=purchase,
-                ticket_sales_amount=purchase.subtotal,
-                platform_fee=platform_fee,
-                organizer_earnings=organizer_earnings,
-                status='pending'  # Will become 'available' after 7 days
+                    'success': False,
+                    'message': 'No payment profile found. Please add a bank account first.'
+                }, status=status.HTTP_404_NOT_FOUND)
+        else:
+            payment_profile = get_object_or_404(
+                PaymentProfile,
+                id=payment_profile_id,
+                user=user
             )
-            print("✅ Revenue record created")
+        
+        # Check if payment profile is verified
+        if payment_profile.status != 'verified':
+            return Response({
+                'success': False,
+                'message': 'Payment profile must be verified before withdrawal',
+                'data': {
+                    'payment_profile_status': payment_profile.status,
+                    'payment_profile_id': str(payment_profile.id)
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Calculate transfer fee (Paystack Ghana charges)
+        # Free for transfers below GHS 5,000
+        # GHS 10 flat fee for transfers GHS 5,000 and above
+        if requested_amount >= Decimal('5000.00'):
+            transfer_fee = Decimal('10.00')
+        else:
+            transfer_fee = Decimal('0.00')
+        
+        final_amount = requested_amount - transfer_fee
+        
+        # Create withdrawal request
+        withdrawal = WithdrawalRequest.objects.create(
+            organizer=user,
+            payment_profile=payment_profile,
+            requested_amount=requested_amount,
+            transfer_fee=transfer_fee,
+            final_amount=final_amount,
+            status='pending'
+        )
+        
+        # Reserve revenue for this withdrawal
+        self._reserve_revenue(withdrawal, requested_amount)
+        
+        # 🔥 AUTOMATICALLY INITIATE TRANSFER
+        transfer_result = PaystackTransferService.initiate_transfer(withdrawal)
+        
+        if transfer_result['success']:
+            return Response({
+                'success': True,
+                'message': 'Withdrawal initiated successfully. Money will be sent to your bank account within 1-2 minutes.',
+                'data': {
+                    'withdrawal_id': withdrawal.withdrawal_id,
+                    'requested_amount': str(requested_amount),
+                    'transfer_fee': str(transfer_fee),
+                    'final_amount': str(final_amount),
+                    'status': withdrawal.status,
+                    'transfer_code': transfer_result['transfer_code'],
+                    'bank_account': {
+                        'bank_name': payment_profile.bank_name,
+                        'account_number': payment_profile.account_number,
+                        'account_name': payment_profile.account_name
+                    }
+                }
+            }, status=status.HTTP_201_CREATED)
+        else:
+            return Response({
+                'success': False,
+                'message': f'Failed to initiate transfer: {transfer_result["message"]}',
+                'data': {
+                    'withdrawal_id': withdrawal.withdrawal_id,
+                    'status': withdrawal.status,
+                    'error': transfer_result['message']
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def _reserve_revenue(self, withdrawal, amount):
+        """Reserve available revenue for this withdrawal"""
+        # Get available revenue items
+        available_revenue = OrganizerRevenue.objects.filter(
+            organizer=withdrawal.organizer,
+            status='available',
+            is_withdrawn=False,
+            withdrawal__isnull=True
+        ).order_by('created_at')
+        
+        # Reserve revenue items until we reach the requested amount
+        amount_reserved = Decimal('0.00')
+        for revenue_item in available_revenue:
+            if amount_reserved >= amount:
+                break
             
-            # Send ticket confirmation email
-            print("Sending confirmation email...")
-            try:
-                from .utils import send_purchase_ticket_email
-                send_purchase_ticket_email(purchase)
-                print("✅ Email sent successfully")
-            except Exception as e:
-                print(f"⚠️ Failed to send email: {str(e)}")
-                # Don't fail the whole transaction if email fails
+            revenue_item.withdrawal = withdrawal
+            revenue_item.status = 'on_hold'
+            revenue_item.save()
+            
+            amount_reserved += revenue_item.organizer_earnings
+
+
+class WithdrawalHistoryView(APIView):
+    """
+    GET /api/v1/users/withdrawal/history/
+    Get withdrawal history for the organizer
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
         
-        # Serialize tickets
-        print("Serializing tickets for response...")
-        try:
-            serializer = TicketSerializer(tickets, many=True, context={'request': request})
-            tickets_data = serializer.data
-            print("✅ Tickets serialized successfully")
-        except Exception as e:
-            print(f"❌ ERROR serializing tickets: {str(e)}")
-            print(traceback.format_exc())
-            raise
+        withdrawals = WithdrawalRequest.objects.filter(
+            organizer=user
+        ).select_related('payment_profile').order_by('-created_at')
         
-        # Return success response
-        print("✅ Returning success response")
-        print(f"{'='*50}\n")
+        withdrawal_list = []
+        for withdrawal in withdrawals:
+            withdrawal_list.append({
+                'withdrawal_id': withdrawal.withdrawal_id,
+                'requested_amount': str(withdrawal.requested_amount),
+                'transfer_fee': str(withdrawal.transfer_fee),
+                'final_amount': str(withdrawal.final_amount),
+                'status': withdrawal.status,
+                'bank_account': {
+                    'bank_name': withdrawal.payment_profile.bank_name,
+                    'account_number': withdrawal.payment_profile.account_number,
+                    'account_name': withdrawal.payment_profile.account_name
+                },
+                'created_at': withdrawal.created_at,
+                'completed_at': withdrawal.completed_at,
+                'rejection_reason': withdrawal.rejection_reason or None
+            })
+        
         return Response({
             'success': True,
-            'status': 'completed',
-            'message': 'Payment verified successfully',
-            'purchase_id': purchase.purchase_id,
-            'amount': float(payment.amount),
-            'tickets': tickets_data,
-            'ticket_count': len(tickets)
-        }, status=status.HTTP_200_OK)
+            'count': len(withdrawal_list),
+            'data': withdrawal_list
+        })
+
+
+class WithdrawalDetailView(APIView):
+    """
+    GET /api/v1/users/withdrawal/{withdrawal_id}/
+    Get withdrawal details
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, withdrawal_id):
+        user = request.user
         
-    except Exception as e:
-        print(f"\n{'!'*50}")
-        print(f"❌❌❌ CRITICAL ERROR ❌❌❌")
-        print(f"Error: {str(e)}")
-        print(f"{'!'*50}")
-        print(traceback.format_exc())
-        print(f"{'!'*50}\n")
-        return Response(
-            {'error': f'An error occurred: {str(e)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        withdrawal = get_object_or_404(
+            WithdrawalRequest,
+            withdrawal_id=withdrawal_id,
+            organizer=user
         )
-    
-
-def initialize_paystack_payment(email, amount, reference, metadata=None, callback_url=None):
-    """
-    Initialize payment with Paystack
-    
-    Args:
-        email: Customer email
-        amount: Amount in GHS
-        reference: Unique payment reference
-        metadata: Additional data (dict)
-        callback_url: Optional callback URL (defaults to frontend)
-    
-    Returns:
-        dict: Response from Paystack
-    """
-    # Convert amount to kobo (Paystack uses smallest currency unit)
-    # For GHS: 1 GHS = 100 pesewas
-    amount_in_pesewas = int(amount * 100)
-
-    # Use provided callback or default to frontend
-    if callback_url is None:
-        callback_url = f"{settings.FRONTEND_URL}/payment-results"
-    
-    url = "https://api.paystack.co/transaction/initialize"
-    
-    headers = {
-        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "email": email,
-        "amount": amount_in_pesewas,
-        "reference": reference,
-        "currency": "GHS",
-        "callback_url": callback_url,
-        "metadata": metadata or {}
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        response_data = response.json()
         
-        if response.status_code == 200 and response_data.get('status'):
-            return {
-                'success': True,
-                'data': response_data['data']
+        return Response({
+            'success': True,
+            'data': {
+                'withdrawal_id': withdrawal.withdrawal_id,
+                'requested_amount': str(withdrawal.requested_amount),
+                'transfer_fee': str(withdrawal.transfer_fee),
+                'final_amount': str(withdrawal.final_amount),
+                'status': withdrawal.status,
+                'bank_account': {
+                    'bank_name': withdrawal.payment_profile.bank_name,
+                    'account_number': withdrawal.payment_profile.account_number,
+                    'account_name': withdrawal.payment_profile.account_name
+                },
+                'transfer_code': withdrawal.transfer_code or None,
+                'transfer_reference': withdrawal.transfer_reference or None,
+                'created_at': withdrawal.created_at,
+                'completed_at': withdrawal.completed_at,
+                'rejection_reason': withdrawal.rejection_reason or None,
+                'admin_notes': withdrawal.admin_notes or None
             }
-        else:
-            return {
-                'success': False,
-                'message': response_data.get('message', 'Unknown error'),
-                'data': response_data
-            }
-    except requests.exceptions.RequestException as e:
-        return {
-            'success': False,
-            'message': f'Network error: {str(e)}'
-        }
-    except Exception as e:
-        return {
-            'success': False,
-            'message': f'Error: {str(e)}'
-        }
+        })
 
 
-def verify_paystack_payment(reference):
+class CancelWithdrawalView(APIView):
     """
-    Verify payment with Paystack
-    
-    Args:
-        reference: Payment reference to verify
-    
-    Returns:
-        dict: Verification result
+    POST /api/v1/users/withdrawal/{withdrawal_id}/cancel/
+    Cancel a pending withdrawal request
     """
-    url = f"https://api.paystack.co/transaction/verify/{reference}"
+    permission_classes = [permissions.IsAuthenticated]
     
-    headers = {
-        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response_data = response.json()
+    def post(self, request, withdrawal_id):
+        user = request.user
         
-        if response.status_code == 200 and response_data.get('status'):
-            return {
-                'success': True,
-                'data': response_data['data']
-            }
-        else:
-            return {
+        withdrawal = get_object_or_404(
+            WithdrawalRequest,
+            withdrawal_id=withdrawal_id,
+            organizer=user
+        )
+        
+        # Can only cancel if pending
+        if withdrawal.status != 'pending':
+            return Response({
                 'success': False,
-                'message': response_data.get('message', 'Verification failed'),
-                'data': response_data
-            }
-    except requests.exceptions.RequestException as e:
-        return {
-            'success': False,
-            'message': f'Network error: {str(e)}'
-        }
-    except Exception as e:
-        return {
-            'success': False,
-            'message': f'Error: {str(e)}'
-        }
-    
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def mobile_payment_callback(request):
-    """
-    Mobile payment callback - redirects to app deep link
-    
-    URL: /api/payments/mobile-callback
-    Query params: reference or trxref (from Paystack)
-    """
-    # Paystack sends reference as 'reference' or 'trxref'
-    reference = request.GET.get('reference') or request.GET.get('trxref')
-    
-    if not reference:
-        # If no reference, redirect to app with error
-        return redirect('cafatickets://payment-result?error=no_reference')
-    
-    # Redirect to mobile app with payment reference
-    return redirect(f'cafatickets://payment-result?reference={reference}')
-
+                'message': f'Cannot cancel withdrawal with status: {withdrawal.status}',
+                'data': {
+                    'current_status': withdrawal.status,
+                    'cancellable_statuses': ['pending']
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Release reserved revenue
+        OrganizerRevenue.objects.filter(withdrawal=withdrawal).update(
+            withdrawal=None,
+            status='available'
+        )
+        
+        # Delete withdrawal request
+        withdrawal.delete()
+        
+        return Response({
+            'success': True,
+            'message': 'Withdrawal request cancelled successfully'
+        })
