@@ -1,0 +1,134 @@
+{% load i18n %}
+
+{% block subject %}
+Activate Your {{ site_name }} Account
+{% endblock subject %}
+
+{% block text_body %}
+Welcome to {{ site_name }}!
+
+Thank you for creating an account with us. To complete your registration and activate your account, please verify your email address by clicking the link below:
+
+{{ protocol }}://{{ domain }}/{{ url|safe }}
+
+This activation link will expire in 24 hours for security purposes.
+
+If you did not create an account with {{ site_name }}, please disregard this email.
+
+Best regards,
+The {{ site_name }} Team
+
+---
+Need help? Contact our support team at support@cafatickets.com
+{% endblock text_body %}
+
+{% block html_body %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+            border-radius: 8px 8px 0 0;
+        }
+        .content {
+            background: #ffffff;
+            padding: 40px 30px;
+            border: 1px solid #e0e0e0;
+        }
+        .button {
+            display: inline-block;
+            padding: 14px 32px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white !important;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .button:hover {
+            opacity: 0.9;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #666666;
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+        }
+        .divider {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 30px 0;
+        }
+        .notice {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 style="margin: 0; font-size: 28px;">Welcome to {{ site_name }}</h1>
+    </div>
+    
+    <div class="content">
+        <p style="font-size: 16px; margin-top: 0;">Dear Valued Customer,</p>
+        
+        <p>Thank you for registering with <strong>{{ site_name }}</strong>. We're excited to have you join our community!</p>
+        
+        <p>To complete your registration and ensure the security of your account, please verify your email address by clicking the button below:</p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ protocol }}://{{ domain }}/{{ url|safe }}" class="button">Activate My Account</a>
+        </div>
+        
+        <p style="font-size: 14px; color: #666;">Or copy and paste this link into your browser:</p>
+        <p style="font-size: 12px; word-break: break-all; background: #f8f9fa; padding: 10px; border-radius: 4px;">
+            {{ protocol }}://{{ domain }}/{{ url|safe }}
+        </p>
+        
+        <div class="notice">
+            <strong>⏰ Important:</strong> This activation link will expire in 24 hours for security purposes.
+        </div>
+        
+        <div class="divider"></div>
+        
+        <p style="font-size: 14px; color: #666;">
+            If you did not create an account with {{ site_name }}, please disregard this email or contact our support team if you have concerns.
+        </p>
+        
+        <p style="margin-bottom: 0;">
+            Best regards,<br>
+            <strong>The {{ site_name }} Team</strong>
+        </p>
+    </div>
+    
+    <div class="footer">
+        <p style="margin: 5px 0;">Need assistance? Contact us at <a href="mailto:support@cafatickets.com" style="color: #667eea;">support@cafatickets.com</a></p>
+        <p style="margin: 5px 0;">© 2026 {{ site_name }}. All rights reserved.</p>
+        <p style="margin: 5px 0; font-size: 11px; color: #999;">This is an automated message. Please do not reply to this email.</p>
+    </div>
+</body>
+</html>
+{% endblock html_body %}
