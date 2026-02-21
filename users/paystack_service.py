@@ -11,6 +11,12 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+print("=" * 60)
+print("PAYSTACK SERVICE LOADED")
+print(f"SECRET_KEY: {settings.PAYSTACK_SECRET_KEY[:20]}..." if settings.PAYSTACK_SECRET_KEY else "NOT SET")
+print(f"PUBLIC_KEY: {settings.PAYSTACK_PUBLIC_KEY[:20]}..." if settings.PAYSTACK_PUBLIC_KEY else "NOT SET")
+print("=" * 60)
+
 PAYSTACK_SECRET_KEY = settings.PAYSTACK_SECRET_KEY
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 
@@ -226,6 +232,7 @@ class PaystackTransferService:
             }
     
     @staticmethod
+    @staticmethod
     def resolve_account_number(account_number, bank_code):
         """
         Resolve account number to get account name
@@ -249,25 +256,43 @@ class PaystackTransferService:
             "bank_code": bank_code
         }
         
+        # 🔍 LOG REQUEST DETAILS
+        logger.info(f"=== Bank Verification Attempt ===")
+        logger.info(f"Account Number: {account_number}")
+        logger.info(f"Bank Code: {bank_code}")
+        logger.info(f"API URL: {url}")
+        logger.info(f"Using Key: {PAYSTACK_SECRET_KEY[:15]}...")  # Only log first 15 chars
+        
         try:
             response = requests.get(url, params=params, headers=headers)
             data = response.json()
             
+            # 🔍 LOG RESPONSE DETAILS
+            logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Response Body: {data}")
+            
             if response.status_code == 200 and data.get('status'):
                 account_name = data['data']['account_name']
-                account_number = data['data']['account_number']
+                resolved_account_number = data['data']['account_number']
                 
-                logger.info(f"Account resolved: {account_name}")
+                logger.info(f"✅ Account resolved successfully: {account_name}")
                 
                 return {
                     'success': True,
                     'account_name': account_name,
-                    'account_number': account_number,
+                    'account_number': resolved_account_number,
                     'message': 'Account resolved successfully'
                 }
             else:
                 error_msg = data.get('message', 'Failed to resolve account')
-                logger.error(f"Account resolution failed: {error_msg}")
+                
+                # 🔍 LOG DETAILED ERROR
+                logger.error(f"❌ Account resolution failed")
+                logger.error(f"   Account: {account_number}")
+                logger.error(f"   Bank Code: {bank_code}")
+                logger.error(f"   Status Code: {response.status_code}")
+                logger.error(f"   Error Message: {error_msg}")
+                logger.error(f"   Full Response: {data}")
                 
                 return {
                     'success': False,
@@ -276,15 +301,23 @@ class PaystackTransferService:
                     'message': error_msg
                 }
                 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Network error during bank verification: {str(e)}")
+            return {
+                'success': False,
+                'account_name': None,
+                'account_number': None,
+                'message': f'Network error: {str(e)}'
+            }
         except Exception as e:
-            logger.error(f"Exception resolving account: {str(e)}")
+            logger.error(f"❌ Exception resolving account: {str(e)}")
+            logger.exception("Full traceback:")  # This logs full stack trace
             return {
                 'success': False,
                 'account_name': None,
                 'account_number': None,
                 'message': str(e)
             }
-    
     @staticmethod
     def verify_bank_account(payment_profile, is_retry=False):
         """

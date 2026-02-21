@@ -178,7 +178,6 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="admin@example.com")
 
 FRONTEND_URL = "https://cafatickets.com"
 
-
 # jwt settings
 from datetime import timedelta
 
@@ -291,3 +290,10 @@ LOGGING = {
 
 # whitenoise settings
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+# At the end of settings.py
+print("=" * 60)
+print("LOADED PAYSTACK KEYS:")
+print(f"SECRET: {PAYSTACK_SECRET_KEY[:20]}..." if PAYSTACK_SECRET_KEY else "NOT SET")
+print(f"PUBLIC: {PAYSTACK_PUBLIC_KEY[:20]}..." if PAYSTACK_PUBLIC_KEY else "NOT SET")
+print("=" * 60)

@@ -364,9 +364,10 @@ class TicketType(models.Model):
         help_text="Minimum tickets per purchase"
     )
     max_purchase = models.PositiveIntegerField(
-        default=10,
-        validators=[MinValueValidator(1)],
-        help_text="Maximum tickets per purchase"
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(1000)],
+        help_text="Maximum tickets per purchase (leave empty for unlimited, max 1000)"
     )
     available_from = models.DateTimeField(
         null=True,
@@ -573,7 +574,7 @@ class Purchase(models.Model):
             ticket_sales_amount=self.subtotal,
             platform_fee=platform_fee,
             organizer_earnings=organizer_earnings,
-            status='pending'  # Will become 'available' after 7 days
+            status='available'  # ✅ Changed from 'pending' to 'available'
         )
 
     @property

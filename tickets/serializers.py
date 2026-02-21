@@ -198,6 +198,19 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+        def get_additional_images(self, obj):
+            """Convert relative image paths to full URLs"""
+            if not obj.additional_images:
+                return []
+            
+            request = self.context.get('request')
+            if request:
+                return [request.build_absolute_uri(img) for img in obj.additional_images]
+            else:
+                from django.conf import settings
+                base_url = getattr(settings, 'BASE_URL', 'http://api.cafatickets.com')
+                return [f"{base_url}{img}" for img in obj.additional_images]
+
 
 class EventCreateUpdateSerializer(serializers.ModelSerializer):
     category_id = serializers.IntegerField(required=False, allow_null=True)

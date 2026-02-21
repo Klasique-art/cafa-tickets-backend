@@ -10,6 +10,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db.models import Q, Count
 from rest_framework import parsers
+from decimal import Decimal
 
 from .models import Event, EventCategory, TicketType
 from .new_serializers import (
@@ -507,9 +508,9 @@ class MyEventsView(generics.ListAPIView):
             total_tickets = event.max_attendees
             
             event_purchases = Purchase.objects.filter(event=event, status='completed')
-            gross_revenue = event_purchases.aggregate(total=Sum('subtotal'))['total'] or 0
-            platform_fee = event_purchases.aggregate(total=Sum('service_fee'))['total'] or 0
-            net_revenue = gross_revenue
+            gross_revenue = event_purchases.aggregate(total=Sum('subtotal'))['total'] or Decimal('0.00')
+            platform_fee = event_purchases.aggregate(total=Sum('service_fee'))['total'] or Decimal('0.00')
+            net_revenue = gross_revenue - platform_fee  # Fixed: net_revenue should subtract platform_fee
             
             last_sale = event_purchases.order_by('-created_at').first()
             
@@ -531,7 +532,8 @@ class MyEventsView(generics.ListAPIView):
             # Add ticket types
             ticket_types_data = []
             for tt in event.ticket_types.all():
-                tickets_sold_for_type = tt.tickets_sold
+                # Use actual paid tickets count instead of tickets_sold field
+                tickets_sold_for_type = tt.tickets.filter(status='paid').count()
                 revenue = tickets_sold_for_type * tt.price
                 sales_percentage = round((tickets_sold_for_type / tt.quantity * 100) if tt.quantity > 0 else 0, 2)
                 
@@ -893,25 +895,22 @@ class DeleteEventView(generics.DestroyAPIView):
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         
-        # Check if event has already started or ended
-        if instance.status in ['ongoing', 'past']:
-            return Response({
-                'error': 'Cannot delete event',
-                'message': 'Cannot delete event that has already started or ended. Please contact support.'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if any tickets have been sold
+        # Only check if any tickets have been sold
+        # Allow deletion of past/ongoing events if no tickets sold
         total_sold = sum(ticket.tickets_sold for ticket in instance.ticket_types.all())
         if total_sold > 0:
             return Response({
+                'success': False,
                 'error': 'Cannot delete event',
-                'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). Please contact support for assistance.',
-                'support_email': 'support@cafaticket.com'
+                'message': f'Cannot delete event with sold tickets ({total_sold} tickets sold). This affects attendees and revenue records.',
+                'tickets_sold': total_sold,
+                'suggestion': 'Consider unpublishing the event instead of deleting it.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Delete the event
+        # Delete the event (no tickets sold, safe to delete)
         instance.delete()
 
         return Response({
+            'success': True,
             'message': 'Event deleted successfully'
         }, status=status.HTTP_200_OK)

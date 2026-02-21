@@ -574,17 +574,19 @@ class EventAnalyticsView(APIView):
         tickets_sold = event.tickets.filter(status='paid').count()
         tickets_checked_in = event.tickets.filter(is_checked_in=True).count()
 
+        from decimal import Decimal
+
         gross_revenue = Purchase.objects.filter(
             event=event,
             status='completed'
-        ).aggregate(total=Sum('subtotal'))['total'] or 0
+        ).aggregate(total=Sum('subtotal'))['total'] or Decimal('0.00')
 
         platform_fee = Purchase.objects.filter(
             event=event,
             status='completed'
-        ).aggregate(total=Sum('service_fee'))['total'] or 0
+        ).aggregate(total=Sum('service_fee'))['total'] or Decimal('0.00')
 
-        net_revenue = gross_revenue
+        net_revenue = gross_revenue - platform_fee  # Fixed: subtract platform_fee
 
         # Calculate average ticket price
         average_ticket_price = round(gross_revenue / tickets_sold, 2) if tickets_sold > 0 else 0

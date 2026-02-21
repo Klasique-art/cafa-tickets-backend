@@ -171,6 +171,11 @@ class PaymentProfileCreateSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
+        # Check if this is the first payment profile
+        if PaymentProfile.objects.filter(user=user).count() == 1:
+            payment_profile.is_default = True
+            payment_profile.save()
+
         # Initiate verification (1 GHS deduction)
         payment_profile.verification_initiated_at = timezone.now()
         payment_profile.status = 'pending_verification'

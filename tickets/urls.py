@@ -54,7 +54,7 @@ from .contact_views import (
 )
 
 # Payment Views
-from .payment_views import initiate_payment, verify_payment
+from .payment_views import initiate_payment, verify_payment, mobile_payment_callback
 
 urlpatterns = [
     # ============================================================================
@@ -117,6 +117,7 @@ urlpatterns = [
 
     path('payments/initiate/', initiate_payment, name='initiate-payment'),
     path('payments/verify/<str:reference>/', verify_payment, name='verify-payment'),
+    path('payments/mobile-callback/', mobile_payment_callback, name='mobile_payment_callback'), 
     
     # Payment History (list all payments)
     path('payments/', PaymentHistoryView.as_view(), name='payment-history'),

@@ -385,6 +385,17 @@ class CreateWithdrawalRequestView(APIView):
                 is_default=True
             ).first()
             
+            # Fallback: If no default, but user has exactly one profile, use that
+            if not payment_profile:
+                user_profiles = PaymentProfile.objects.filter(user=user)
+                if user_profiles.count() == 1:
+                    payment_profile = user_profiles.first()
+                elif user_profiles.count() > 1:
+                    return Response({
+                        'success': False,
+                        'message': 'Please select a payment method for withdrawal.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
             if not payment_profile:
                 return Response({
                     'success': False,

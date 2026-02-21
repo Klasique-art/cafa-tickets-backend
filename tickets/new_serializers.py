@@ -264,6 +264,20 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'longitude': str(obj.venue_longitude) if obj.venue_longitude else None,
             'google_maps_url': f"https://www.google.com/maps?q={obj.venue_latitude},{obj.venue_longitude}" if obj.venue_latitude and obj.venue_longitude else None
         }
+    
+    # ✅ ADD THIS METHOD (before get_timezone)
+    def get_additional_images(self, obj):
+        """Convert relative image paths to full URLs"""
+        if not obj.additional_images:
+            return []
+        
+        request = self.context.get('request')
+        if request:
+            return [request.build_absolute_uri(img) for img in obj.additional_images]
+        else:
+            from django.conf import settings
+            base_url = getattr(settings, 'BASE_URL', 'http://api.cafatickets.com')
+            return [f"{base_url}{img}" for img in obj.additional_images]
 
     def get_timezone(self, obj):
         return "Africa/Accra"
